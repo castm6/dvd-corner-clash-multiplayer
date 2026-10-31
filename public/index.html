@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DVD Corner Clash</title>
+  <style>
+    :root { --ink:#eaf7ff; --muted:#93b6ce; --line:rgba(142,220,255,.22); --panel:rgba(7,19,38,.84); --accent:#74dcff; --gold:#ffd66e; --pink:#ff8bbf; --green:#83f6b0; }
+    * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); font:16px/1.4 "Trebuchet MS", system-ui,sans-serif; background:radial-gradient(circle at 18% 0,#164d79 0,transparent 28%),radial-gradient(circle at 90% 100%,#483116 0,transparent 27%),#030915; }
+    button,input,select { font:inherit; } button { color:var(--ink); cursor:pointer; border:1px solid var(--line); background:#112742; border-radius:14px; padding:11px 14px; font-weight:800; } button:hover:not(:disabled),button.active { transform:translateY(-1px); border-color:var(--accent); background:linear-gradient(135deg,#17527b,#283d57); } button:disabled { opacity:.45; cursor:not-allowed; }
+    input,select { width:100%; color:var(--ink); border:1px solid var(--line); background:#07172d; border-radius:12px; padding:10px; } label { display:grid; gap:6px; color:var(--muted); font-size:.82rem; text-transform:uppercase; letter-spacing:.08em; }
+    .shell { width:min(1280px,calc(100% - 28px)); margin:0 auto; padding:18px 0 28px; } header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px; border:1px solid var(--line); border-radius:22px; background:var(--panel); backdrop-filter:blur(12px); }
+    h1,h2,h3,p { margin:0; } h1 { font:900 clamp(1.55rem,4vw,2.7rem)/.95 "Arial Black",sans-serif; letter-spacing:.03em; text-transform:uppercase; } h2 { font:900 clamp(1.3rem,3vw,2rem)/1 "Arial Black",sans-serif; text-transform:uppercase; } .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.18em; font-size:.74rem; font-weight:800; }
+    .status { text-align:right; color:var(--muted); } .status strong { display:block; color:var(--gold); font:800 1.35rem Consolas,monospace; }
+    .grid { display:grid; grid-template-columns:330px minmax(0,1fr) 270px; gap:14px; margin-top:14px; } .panel { border:1px solid var(--line); border-radius:22px; padding:18px; background:var(--panel); box-shadow:0 18px 60px rgba(0,0,0,.24); } .stack { display:grid; gap:14px; }
+    .landing { width:min(720px,100%); margin:12vh auto; } .landing .panel { padding:30px; text-align:center; } .form-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:18px; } .or { color:var(--muted); margin:14px 0; font-weight:800; }
+    .modes { display:grid; gap:9px; margin-top:14px; } .modes button { text-align:left; } .modes small { color:var(--muted); display:block; margin-top:3px; font-weight:400; }
+    .players { display:grid; gap:9px; margin-top:12px; } .player { display:flex; justify-content:space-between; gap:8px; padding:10px; background:rgba(255,255,255,.04); border-radius:12px; } .player.you { outline:1px solid var(--accent); } .disc { color:var(--gold); font-family:Consolas,monospace; } .seat { color:var(--pink); font-size:.76rem; text-transform:uppercase; }
+    .arena { position:relative; min-height:520px; overflow:hidden; border-radius:22px; border:1px solid var(--line); background:repeating-linear-gradient(0deg,rgba(255,255,255,.04),rgba(255,255,255,.04) 1px,transparent 1px,transparent 34px),repeating-linear-gradient(90deg,rgba(255,255,255,.04),rgba(255,255,255,.04) 1px,transparent 1px,transparent 34px),#051224; } canvas { display:block; width:100%; height:520px; }
+    .arena-card { position:absolute; inset:0; display:grid; place-items:center; padding:20px; pointer-events:none; } .arena-card .card { max-width:500px; text-align:center; padding:24px; background:rgba(3,10,22,.78); border:1px solid var(--line); border-radius:20px; backdrop-filter:blur(10px); } .hidden { display:none !important; }
+    .hud { position:absolute; inset:16px 16px auto; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; pointer-events:none; } .chip { padding:8px 10px; border:1px solid var(--line); border-radius:12px; background:rgba(4,13,28,.72); color:var(--muted); font-size:.82rem; } .chip strong { color:var(--ink); }
+    .bet-form { display:grid; gap:10px; margin-top:12px; } .two { display:grid; grid-template-columns:1fr 1fr; gap:8px; } .info { color:var(--muted); font-size:.9rem; } .notice { min-height:22px; color:var(--gold); font-weight:700; } .result { color:var(--green); margin-top:12px; font-weight:800; }
+    .rules { color:var(--muted); font-size:.9rem; } .big { color:var(--gold); font:900 2rem Consolas,monospace; } .seat-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+    @media (max-width:1000px) { .grid { grid-template-columns:1fr; } .right { order:3; } .arena { min-height:440px; } canvas { height:440px; } }
+    @media (max-width:560px) { .shell { width:min(100% - 18px,1280px); } header { align-items:flex-start; flex-direction:column; } .status { text-align:left; } .form-row,.two { grid-template-columns:1fr; } .arena { min-height:390px; } canvas { height:390px; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section id="landing" class="landing">
+      <div class="panel">
+        <p class="eyebrow">Real-time room-code arcade</p>
+        <h1>DVD Corner Clash</h1>
+        <p class="rules" style="margin-top:14px">Predict the bounce. Split the disc pot. Or grab a paddle and face someone in two-player DVD Pong.</p>
+        <div class="form-row">
+          <label>Display name<input id="name-input" maxlength="16" placeholder="Your name"></label>
+          <label>Room code<input id="room-input" maxlength="6" placeholder="Join a room"></label>
+        </div>
+        <div class="form-row">
+          <button id="create-button">Create Room</button>
+          <button id="join-button">Join Room</button>
+        </div>
+        <p id="landing-notice" class="notice" style="margin-top:12px"></p>
+      </div>
+    </section>
+
+    <section id="game" class="hidden">
+      <header>
+        <div><p class="eyebrow">Room <span id="room-code">------</span></p><h1>DVD Corner Clash</h1></div>
+        <div class="status"><span id="phase-label">Lobby</span><strong id="my-discs">0 discs</strong></div>
+      </header>
+      <div class="grid">
+        <aside class="stack">
+          <section class="panel">
+            <p class="eyebrow">Game mode</p>
+            <div class="modes">
+              <button data-mode="prediction" data-style="normal" id="prediction-normal-mode">Normal Corner Call<small>Watch the real DVD bounce path and call the bounce where its next corner lands.</small></button>
+              <button data-mode="prediction" data-style="chance" id="prediction-chance-mode">500 Bounce Chance<small>Same real bounce path, with the next corner guaranteed by bounce 500.</small></button>
+              <button data-mode="pong" id="pong-mode">2 Player Pong<small>Two people play. Everyone else watches.</small></button>
+            </div>
+          </section>
+          <section class="panel">
+            <p class="eyebrow">Players <span id="player-count"></span></p>
+            <div id="players" class="players"></div>
+          </section>
+          <section class="panel">
+            <p class="eyebrow">Disc leaderboard</p>
+            <div id="leaderboard" class="players"></div>
+          </section>
+        </aside>
+
+        <section class="arena">
+          <canvas id="arena" width="1000" height="620"></canvas>
+          <div class="hud"><span id="main-chip" class="chip">Waiting for host</span><span id="pot-chip" class="chip">Pot: <strong>0 discs</strong></span></div>
+          <div id="arena-card" class="arena-card"><div class="card"><p class="eyebrow">Lobby</p><h2 id="arena-title">Choose a game mode</h2><p id="arena-copy" class="rules" style="margin-top:10px">The host can open prediction betting or start a 2 player Pong match.</p></div></div>
+        </section>
+
+        <aside class="right stack">
+          <section id="prediction-panel" class="panel">
+            <p class="eyebrow">Prediction Pool</p>
+            <p class="info">Pick an exact bounce for 2 payout shares, or a range for 1. All stakes make one pot.</p>
+            <div class="bet-form">
+              <label>Bet type<select id="bet-kind"><option value="range">Range</option><option value="exact">Exact number</option></select></label>
+              <div class="two"><label>From<input id="bet-min" type="number" min="1" max="500" value="100"></label><label>To<input id="bet-max" type="number" min="1" max="500" value="150"></label></div>
+              <label>Stake in discs<input id="bet-stake" type="number" min="1" value="10"></label>
+              <button id="bet-button">Lock Bet</button>
+            </div>
+            <p id="bet-status" class="notice"></p>
+            <p id="prediction-result" class="result"></p>
+            <p class="eyebrow" style="margin-top:16px">Bet board</p>
+            <div id="bet-board" class="players"></div>
+          </section>
+          <section id="pong-panel" class="panel hidden">
+            <p class="eyebrow">Pong Seats</p>
+            <p class="info">Top uses A / D. Bottom uses Left / Right. First to 5 wins 25 discs; runner-up gets 5.</p>
+            <div class="seat-buttons"><button data-seat="top">Take Top</button><button data-seat="bottom">Take Bottom</button></div>
+          </section>
+          <section class="panel">
+            <p class="eyebrow">Host controls</p>
+            <label style="margin-top:10px">Prediction room size<select id="room-cap"><option value="20">20 players - Fire Dodge enabled</option><option value="unlimited">Unlimited players - Fire Dodge disabled</option></select></label>
+            <button id="start-button" style="width:100%;margin-top:10px">Start Round</button>
+            <p id="host-help" class="info" style="margin-top:10px">The host starts a round once everyone is ready.</p>
+          </section>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <script>
+    const canvas = document.getElementById("arena");
+    const ctx = canvas.getContext("2d");
+    const app = { socket:null, room:null, playerId:null, roomCode:null, lastError:"", input:0, lastPrediction:null };
+    const $ = (id) => document.getElementById(id);
+    const send = (message) => app.socket?.readyState === WebSocket.OPEN && app.socket.send(JSON.stringify(message));
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      app.socket = new WebSocket(`${protocol}://${location.host}`);
+      app.socket.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === "joined") { app.roomCode = message.roomCode; app.playerId = message.playerId; $("landing").classList.add("hidden"); $("game").classList.remove("hidden"); }
+        if (message.type === "state") { app.room = message.room; render(); }
+        if (message.type === "error") { app.lastError = message.message; $("landing-notice").textContent = message.message; $("bet-status").textContent = message.message; }
+      });
+      app.socket.addEventListener("close", () => { if (app.roomCode) $("landing-notice").textContent = "Connection closed. Refresh to reconnect."; });
+    }
+
+    function enter(kind) {
+      const name = $("name-input").value.trim() || "Player";
+      if (kind === "create") send({ type:"create-room", name });
+      else send({ type:"join-room", name, code:$("room-input").value.trim() });
+    }
+
+    function isHost() { return app.room?.hostId === app.playerId; }
+    function me() { return app.room?.players.find((player) => player.id === app.playerId); }
+
+    function render() {
+      const room = app.room; if (!room) return;
+      const player = me();
+      $("room-code").textContent = room.code;
+      $("phase-label").textContent = room.phase.toUpperCase();
+      $("my-discs").textContent = `${player?.discs ?? 0} discs`;
+      $("player-count").textContent = `(${room.playerCount})`;
+      $("prediction-normal-mode").classList.toggle("active", room.mode === "prediction" && room.predictionStyle === "normal");
+      $("prediction-chance-mode").classList.toggle("active", room.mode === "prediction" && room.predictionStyle === "chance");
+      $("pong-mode").classList.toggle("active", room.mode === "pong");
+      $("prediction-panel").classList.toggle("hidden", room.mode !== "prediction");
+      $("pong-panel").classList.toggle("hidden", room.mode !== "pong");
+      $("start-button").disabled = !isHost() || room.phase !== "lobby";
+      $("room-cap").disabled = !isHost() || room.phase !== "lobby";
+      $("room-cap").value = room.maxPlayers === null ? "unlimited" : "20";
+      $("start-button").textContent = room.mode === "pong" ? "Start Pong Match" : "Open Betting";
+      $("host-help").textContent = isHost() ? (room.mode === "pong" ? "Two seated players are required." : room.maxPlayers === null ? "Unlimited room: Fire Dodge is disabled." : "20-player room: Fire Dodge will be available.") : "Only the room host can start.";
+      $("players").innerHTML = room.players.map((entry) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>${escapeHtml(entry.name)} ${entry.id === room.hostId ? "(host)" : ""}<small class="seat">${entry.seat || "spectator"}</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
+      $("leaderboard").innerHTML = [...room.players].sort((a,b)=>b.discs-a.discs || b.roundWon-a.roundWon).map((entry,index) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>#${index+1} ${escapeHtml(entry.name)}<small class="seat">+${entry.roundWon || 0} this round</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
+      const prediction = room.prediction;
+      $("pot-chip").innerHTML = `Pot: <strong>${prediction?.pot || 0} discs</strong>`;
+      $("bet-board").innerHTML = prediction?.bets?.length ? prediction.bets.map((bet)=>`<div class="player"><span>${escapeHtml(bet.playerName)}<small class="seat">${bet.kind === "exact" ? `exact ${bet.min}` : `${bet.min}-${bet.max}`}</small></span><strong class="disc">${bet.stake}</strong></div>`).join("") : `<p class="info">No bets yet. Be the first call.</p>`;
+      $("bet-button").disabled = room.phase !== "betting";
+      $("main-chip").textContent = room.phase === "betting" ? `Betting closes in ${Math.max(0, Math.ceil((prediction.closesAt - Date.now()) / 1000))}s` : room.phase === "resolving" ? `Bounces: ${prediction.bounces}` : room.mode === "pong" ? "Live 2 player arena" : "Prediction pool lobby";
+      const title = $("arena-title"), copy = $("arena-copy"), card = $("arena-card");
+      if (room.phase === "results") { card.classList.remove("hidden"); renderResult(room, title, copy); }
+      else if (room.phase === "lobby") { card.classList.remove("hidden"); title.textContent = room.mode === "pong" ? "Two paddles. One ridiculous logo." : "Call the corner."; copy.textContent = room.mode === "pong" ? "Take a top or bottom seat. Spectators can watch every rally." : room.predictionStyle === "chance" ? "A real DVD route will bounce around the walls and must corner-hit by bounce 500. Bet the number or a range." : "A real DVD route will bounce around the walls. Bet the number or range where its next corner hit lands."; }
+      else { card.classList.add("hidden"); }
+      draw(room);
+    }
+
+    function renderResult(room, title, copy) {
+      if (room.mode === "pong") { const result = room.pong?.result; title.textContent = `${result?.winnerName || "Winner"} wins!`; copy.textContent = result?.reason || "Match complete."; return; }
+      const prediction = room.prediction; title.textContent = `Corner at bounce ${prediction?.result}!`; const winners = prediction?.winners || []; copy.textContent = winners.length ? `Pot split between ${winners.map((winner) => winner.playerName).join(", ")}.` : "Nobody called it. The pot vanished into the void.";
+      $("prediction-result").textContent = `Result: ${prediction?.result || "?"}`;
+    }
+
+    function draw(room) {
+      ctx.clearRect(0,0,1000,620); ctx.fillStyle="#061426"; ctx.fillRect(0,0,1000,620); ctx.strokeStyle="rgba(116,220,255,.09)"; for(let x=0;x<1000;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,620);ctx.stroke();} for(let y=0;y<620;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(1000,y);ctx.stroke();}
+      if (room.mode === "pong" && room.pong) { const p=room.pong; drawPaddle(p.paddle.top); drawPaddle(p.paddle.bottom); drawLogo(p.ball.x,p.ball.y,p.ball.width,p.ball.height,190); ctx.fillStyle="#eaf7ff"; ctx.font="900 34px Arial Black"; ctx.textAlign="center"; ctx.fillText(`${p.score.top}  :  ${p.score.bottom}`,500,315); return; }
+      if (room.phase === "resolving" && room.prediction?.ball) { const ball=room.prediction.ball; drawLogo(ball.x,ball.y,ball.width,ball.height,ball.hue); ctx.fillStyle="#ffd66e";ctx.font="900 42px Consolas";ctx.textAlign="center";ctx.fillText(String(room.prediction.bounces),500,315); ctx.fillStyle="#93b6ce";ctx.font="700 16px Trebuchet MS";ctx.fillText(room.prediction.hitAt ? "CORNER HIT!" : "wall bounces",500,342); return; }
+      drawLogo(425,260,150,82,196);
+    }
+
+    function drawPaddle(p) { ctx.fillStyle="#74dcff"; roundRect(p.x,p.y,p.width,p.height,8); ctx.fill(); }
+    function drawLogo(x,y,w,h,hue) { const g=ctx.createLinearGradient(x,y,x+w,y+h);g.addColorStop(0,`hsl(${hue} 90% 65%)`);g.addColorStop(1,`hsl(${(hue+65)%360} 90% 43%)`);ctx.fillStyle=g;ctx.strokeStyle="rgba(255,255,255,.86)";ctx.lineWidth=3;roundRect(x,y,w,h,20);ctx.fill();ctx.stroke();ctx.fillStyle="#fff";ctx.font=`italic 900 ${Math.round(h*.53)}px Arial Black`;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("DVD",x+w/2,y+h/2+3); }
+    function roundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+    function escapeHtml(value){return String(value).replace(/[&<>"]/g,(char)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[char]));}
+
+    $("create-button").onclick=()=>enter("create"); $("join-button").onclick=()=>enter("join");
+    document.querySelectorAll("[data-mode]").forEach((button)=>button.onclick=()=>send({type:"set-mode",mode:button.dataset.mode,predictionStyle:button.dataset.style}));
+    document.querySelectorAll("[data-seat]").forEach((button)=>button.onclick=()=>send({type:"take-seat",seat:button.dataset.seat}));
+    $("start-button").onclick=()=>send({type:"start-round"});
+    $("room-cap").onchange=()=>send({type:"set-room-cap",maxPlayers:$("room-cap").value});
+    $("bet-kind").onchange=()=>$("bet-max").disabled=$("bet-kind").value==="exact";
+    $("bet-button").onclick=()=>send({type:"place-bet",kind:$("bet-kind").value,min:Number($("bet-min").value),max:Number($("bet-max").value),stake:Number($("bet-stake").value)});
+    document.addEventListener("keydown",(event)=>{if(!app.room||app.room.mode!=="pong")return; let direction=0;if(event.code==="ArrowLeft"||event.code==="KeyA")direction=-1;if(event.code==="ArrowRight"||event.code==="KeyD")direction=1;if(direction){event.preventDefault();if(app.input!==direction){app.input=direction;send({type:"paddle",direction});}}});
+    document.addEventListener("keyup",(event)=>{if(["ArrowLeft","ArrowRight","KeyA","KeyD"].includes(event.code)){app.input=0;send({type:"paddle",direction:0});}});
+    setInterval(()=>{if(app.room)render();},250); connect();
+  </script>
+</body>
+</html>
