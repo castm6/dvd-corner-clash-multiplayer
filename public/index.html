@@ -20,7 +20,7 @@
     .arena-card { position:absolute; inset:0; display:grid; place-items:center; padding:20px; pointer-events:none; } .arena-card .card { max-width:500px; text-align:center; padding:24px; background:rgba(3,10,22,.78); border:1px solid var(--line); border-radius:20px; backdrop-filter:blur(10px); } .hidden { display:none !important; }
     .hud { position:absolute; inset:16px 16px auto; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; pointer-events:none; } .chip { padding:8px 10px; border:1px solid var(--line); border-radius:12px; background:rgba(4,13,28,.72); color:var(--muted); font-size:.82rem; } .chip strong { color:var(--ink); }
     .bet-form { display:grid; gap:10px; margin-top:12px; } .two { display:grid; grid-template-columns:1fr 1fr; gap:8px; } .info { color:var(--muted); font-size:.9rem; } .notice { min-height:22px; color:var(--gold); font-weight:700; } .result { color:var(--green); margin-top:12px; font-weight:800; }
-    .rules { color:var(--muted); font-size:.9rem; } .big { color:var(--gold); font:900 2rem Consolas,monospace; } .seat-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+    .rules { color:var(--muted); font-size:.9rem; } .big { color:var(--gold); font:900 2rem Consolas,monospace; } .seat-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; } .shop-grid{display:grid;gap:8px;max-height:50vh;overflow:auto;margin-top:12px}.shop-item{text-align:left}.shop-item small{display:block;color:var(--muted);margin-top:4px;font-weight:400}.modal{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:rgba(0,4,12,.72);z-index:5}.modal .panel{width:min(520px,100%)}.number-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0}.number-grid button.active{background:var(--gold);color:#071426}.top-actions{display:flex;gap:8px;align-items:center}.icon-button{padding:9px 12px;font-size:1.1rem}
     @media (max-width:1000px) { .grid { grid-template-columns:1fr; } .right { order:3; } .arena { min-height:440px; } canvas { height:440px; } }
     @media (max-width:560px) { .shell { width:min(100% - 18px,1280px); } header { align-items:flex-start; flex-direction:column; } .status { text-align:left; } .form-row,.two { grid-template-columns:1fr; } .arena { min-height:390px; } canvas { height:390px; } }
   </style>
@@ -47,7 +47,7 @@
     <section id="game" class="hidden">
       <header>
         <div><p class="eyebrow">Room <span id="room-code">------</span></p><h1>DVD Corner Clash</h1></div>
-        <div class="status"><span id="phase-label">Lobby</span><strong id="my-discs">0 discs</strong></div>
+        <div class="top-actions"><div class="status"><span id="phase-label">Lobby</span><strong id="my-discs">0 discs</strong></div><button id="fullscreen-button" class="icon-button" title="Toggle fullscreen">&#x26F6;</button></div>
       </header>
       <div class="grid">
         <aside class="stack">
@@ -89,6 +89,7 @@
             <p id="prediction-result" class="result"></p>
             <p class="eyebrow" style="margin-top:16px">Bet board</p>
             <div id="bet-board" class="players"></div>
+            <button id="shop-button" style="width:100%;margin-top:12px">Open power shop</button>
           </section>
           <section id="pong-panel" class="panel hidden">
             <p class="eyebrow">Pong Seats</p>
@@ -105,10 +106,12 @@
       </div>
     </section>
   </main>
+  <section id="modal" class="modal hidden"><div class="panel"><p class="eyebrow" id="modal-eyebrow">Power shop</p><h2 id="modal-title">Spend discs</h2><div id="modal-body"></div><p id="modal-notice" class="notice" style="margin-top:10px"></p><button id="modal-close" style="width:100%;margin-top:12px">Close</button></div></section>
   <script>
     const canvas = document.getElementById("arena");
     const ctx = canvas.getContext("2d");
-    const app = { socket:null, room:null, playerId:null, roomCode:null, lastError:"", input:0, lastPrediction:null };
+    const app = { socket:null, room:null, playerId:null, roomCode:null, lastError:"", input:0, modal:null, miniNumber:null, dodge:{up:false,down:false,left:false,right:false} };
+    const powerInfo = { mini:["Mini Logo Bet",15,"Freeze the route and let everyone call one exact number from 1 to 10."], scramble:["Angle Scramble",55,"Host-only reset; changes the route without resetting the counter."], turbo:["Turbo",28,"Speed up the shared logo for 15 seconds."], slow:["Slow Field",22,"Slow the shared logo for 15 seconds."], grow:["Grow",24,"Make the shared logo larger for 15 seconds."], shrink:["Shrink",20,"Make the shared logo smaller for 15 seconds."], fire:["Fire Dodge",36,"Spawn cubes, count down, then dodge the fire logo for 60 seconds."] };
     const $ = (id) => document.getElementById(id);
     const send = (message) => app.socket?.readyState === WebSocket.OPEN && app.socket.send(JSON.stringify(message));
 
@@ -156,11 +159,15 @@
       $("pot-chip").innerHTML = `Pot: <strong>${prediction?.pot || 0} discs</strong>`;
       $("bet-board").innerHTML = prediction?.bets?.length ? prediction.bets.map((bet)=>`<div class="player"><span>${escapeHtml(bet.playerName)}<small class="seat">${bet.kind === "exact" ? `exact ${bet.min}` : `${bet.min}-${bet.max}`}</small></span><strong class="disc">${bet.stake}</strong></div>`).join("") : `<p class="info">No bets yet. Be the first call.</p>`;
       $("bet-button").disabled = room.phase !== "betting";
-      $("main-chip").textContent = room.phase === "betting" ? `Betting closes in ${Math.max(0, Math.ceil((prediction.closesAt - Date.now()) / 1000))}s` : room.phase === "resolving" ? `Bounces: ${prediction.bounces}` : room.mode === "pong" ? "Live 2 player arena" : "Prediction pool lobby";
+      $("shop-button").disabled = room.mode !== "prediction" || room.phase !== "resolving" || Boolean(prediction?.mini?.phase === "active" || room.phase === "mini-betting");
+      const effects = prediction?.effects?.map((effect)=>effect.type.toUpperCase()).join(" + ");
+      $("main-chip").textContent = room.phase === "betting" ? `Betting closes in ${Math.max(0, Math.ceil((prediction.closesAt - Date.now()) / 1000))}s` : room.phase === "mini-betting" ? `Mini bets close in ${Math.max(0, Math.ceil((prediction.mini.closesAt - Date.now()) / 1000))}s` : room.phase === "resolving" ? `${prediction.fire?.phase === "countdown" ? `Fire Dodge: ${Math.max(1,Math.ceil(prediction.fire.countdown))}` : `Bounces: ${prediction.bounces}${effects ? ` | ${effects}` : ""}`}` : room.mode === "pong" ? "Live 2 player arena" : "Prediction pool lobby";
       const title = $("arena-title"), copy = $("arena-copy"), card = $("arena-card");
       if (room.phase === "results") { card.classList.remove("hidden"); renderResult(room, title, copy); }
       else if (room.phase === "lobby") { card.classList.remove("hidden"); title.textContent = room.mode === "pong" ? "Two paddles. One ridiculous logo." : "Call the corner."; copy.textContent = room.mode === "pong" ? "Take a top or bottom seat. Spectators can watch every rally." : room.predictionStyle === "chance" ? "A real DVD route will bounce around the walls and must corner-hit by bounce 500. Bet the number or a range." : "A real DVD route will bounce around the walls. Bet the number or range where its next corner hit lands."; }
       else { card.classList.add("hidden"); }
+      if (room.phase === "mini-betting") app.modal = "mini";
+      renderModal();
       draw(room);
     }
 
@@ -170,10 +177,32 @@
       $("prediction-result").textContent = `Result: ${prediction?.result || "?"}`;
     }
 
+    function renderModal() {
+      const room = app.room, prediction = room?.prediction, modal = $("modal");
+      if (app.modal === "mini" && room?.phase !== "mini-betting") app.modal = null;
+      if (!app.modal || !room) { modal.classList.add("hidden"); return; }
+      modal.classList.remove("hidden");
+      if (app.modal === "shop") {
+        $("modal-eyebrow").textContent = "Prediction power shop";
+        $("modal-title").textContent = "Spend discs. Change the route.";
+        $("modal-body").innerHTML = `<p class="info">Every purchase affects the shared logo for everyone. Effects stack until their own timers expire.</p><div class="shop-grid">${Object.entries(powerInfo).filter(([key])=>key!=="fire"||room.fireDodgeEnabled).map(([key,[name,price,copy]])=>{const left=Math.max(0,Math.ceil(((prediction?.cooldowns?.[key]||0)-Date.now())/1000));return `<button class="shop-item" data-power="${key}" ${left?"disabled":""}><b>${name} · ${price} discs</b><small>${left?`${left}s cooldown`:copy}</small></button>`}).join("")}</div>`;
+        document.querySelectorAll("[data-power]").forEach((button)=>button.onclick=()=>send({type:"buy-power",power:button.dataset.power}));
+        $("modal-close").textContent = "Close shop (Space)"; $("modal-close").disabled = false;
+      } else {
+        const mini = prediction?.mini;
+        $("modal-eyebrow").textContent = "Mini Logo Event";
+        $("modal-title").textContent = "Call one corner number";
+        $("modal-body").innerHTML = `<p class="info">The main route is frozen. Pick exactly one mini-logo corner from 1 to 10, choose a stake, and the winners split the mini pot.</p><div class="number-grid">${Array.from({length:10},(_,i)=>`<button data-mini-number="${i+1}" class="${app.miniNumber===i+1?"active":""}">${i+1}</button>`).join("")}</div><label>Stake in discs<input id="mini-stake" type="number" min="1" value="5"></label><button id="mini-bet-button" class="primary" style="width:100%;margin-top:12px" ${app.miniNumber?"":"disabled"}>Lock exact mini bet</button><p class="info" style="margin-top:10px">Pot: ${mini?.pot||0} discs · ${mini?.bets?.length||0} calls locked</p>`;
+        document.querySelectorAll("[data-mini-number]").forEach((button)=>button.onclick=()=>{app.miniNumber=Number(button.dataset.miniNumber);renderModal();});
+        $("mini-bet-button").onclick=()=>send({type:"place-mini-bet",number:app.miniNumber,stake:Number($("mini-stake").value)});
+        $("modal-close").textContent = "Waiting for mini logo"; $("modal-close").disabled = true;
+      }
+    }
+
     function draw(room) {
       ctx.clearRect(0,0,1000,620); ctx.fillStyle="#061426"; ctx.fillRect(0,0,1000,620); ctx.strokeStyle="rgba(116,220,255,.09)"; for(let x=0;x<1000;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,620);ctx.stroke();} for(let y=0;y<620;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(1000,y);ctx.stroke();}
       if (room.mode === "pong" && room.pong) { const p=room.pong; drawPaddle(p.paddle.top); drawPaddle(p.paddle.bottom); drawLogo(p.ball.x,p.ball.y,p.ball.width,p.ball.height,190); ctx.fillStyle="#eaf7ff"; ctx.font="900 34px Arial Black"; ctx.textAlign="center"; ctx.fillText(`${p.score.top}  :  ${p.score.bottom}`,500,315); return; }
-      if (room.phase === "resolving" && room.prediction?.ball) { const ball=room.prediction.ball; drawLogo(ball.x,ball.y,ball.width,ball.height,ball.hue); ctx.fillStyle="#ffd66e";ctx.font="900 42px Consolas";ctx.textAlign="center";ctx.fillText(String(room.prediction.bounces),500,315); ctx.fillStyle="#93b6ce";ctx.font="700 16px Trebuchet MS";ctx.fillText(room.prediction.hitAt ? "CORNER HIT!" : "wall bounces",500,342); return; }
+      if ((room.phase === "resolving" || room.phase === "mini-betting") && room.prediction?.ball) { const p=room.prediction, ball=p.ball; if(p.fire){ctx.save();ctx.shadowColor="#ff4c22";ctx.shadowBlur=36;ctx.fillStyle="rgba(255,74,26,.6)";roundRect(ball.x-8,ball.y-8,ball.width+16,ball.height+16,25);ctx.fill();ctx.restore();} drawLogo(ball.x,ball.y,ball.width,ball.height,ball.hue); if(p.mini?.ball)drawLogo(p.mini.ball.x,p.mini.ball.y,p.mini.ball.width,p.mini.ball.height,(p.mini.ball.hue+110)%360); if(p.fire?.players){for(const [id,cube] of Object.entries(p.fire.players)){ctx.fillStyle=id===app.playerId?"#83f6b0":"#ff8bbf";roundRect(cube.x,cube.y,26,26,5);ctx.fill();ctx.fillStyle="#061426";ctx.font="900 8px Arial Black";ctx.textAlign="center";ctx.fillText(id===app.playerId?"YOU":"P",cube.x+13,cube.y+16)}} ctx.fillStyle="#ffd66e";ctx.font="900 42px Consolas";ctx.textAlign="center";ctx.fillText(String(p.bounces),500,315); ctx.fillStyle="#93b6ce";ctx.font="700 16px Trebuchet MS";ctx.fillText(p.hitAt ? "CORNER HIT!" : p.mini?.phase === "active" ? `MINI: ${p.mini.bounces}/10` : "wall bounces",500,342); return; }
       drawLogo(425,260,150,82,196);
     }
 
@@ -186,11 +215,14 @@
     document.querySelectorAll("[data-mode]").forEach((button)=>button.onclick=()=>send({type:"set-mode",mode:button.dataset.mode,predictionStyle:button.dataset.style}));
     document.querySelectorAll("[data-seat]").forEach((button)=>button.onclick=()=>send({type:"take-seat",seat:button.dataset.seat}));
     $("start-button").onclick=()=>send({type:"start-round"});
+    $("shop-button").onclick=()=>{app.modal="shop";renderModal();};
+    $("modal-close").onclick=()=>{if(app.modal==="shop"){app.modal=null;renderModal();}};
+    $("fullscreen-button").onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
     $("room-cap").onchange=()=>send({type:"set-room-cap",maxPlayers:$("room-cap").value});
     $("bet-kind").onchange=()=>$("bet-max").disabled=$("bet-kind").value==="exact";
     $("bet-button").onclick=()=>send({type:"place-bet",kind:$("bet-kind").value,min:Number($("bet-min").value),max:Number($("bet-max").value),stake:Number($("bet-stake").value)});
-    document.addEventListener("keydown",(event)=>{if(!app.room||app.room.mode!=="pong")return; let direction=0;if(event.code==="ArrowLeft"||event.code==="KeyA")direction=-1;if(event.code==="ArrowRight"||event.code==="KeyD")direction=1;if(direction){event.preventDefault();if(app.input!==direction){app.input=direction;send({type:"paddle",direction});}}});
-    document.addEventListener("keyup",(event)=>{if(["ArrowLeft","ArrowRight","KeyA","KeyD"].includes(event.code)){app.input=0;send({type:"paddle",direction:0});}});
+    document.addEventListener("keydown",(event)=>{if(event.code==="Space"&&app.modal==="shop"){event.preventDefault();app.modal=null;renderModal();return;} if(event.code==="KeyR"&&isHost())send({type:"reset-angle"}); if(app.room?.prediction?.fire){const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){event.preventDefault();app.dodge[map[event.code]]=true;send({type:"dodge",...app.dodge});}} if(!app.room||app.room.mode!=="pong")return; let direction=0;if(event.code==="ArrowLeft"||event.code==="KeyA")direction=-1;if(event.code==="ArrowRight"||event.code==="KeyD")direction=1;if(direction){event.preventDefault();if(app.input!==direction){app.input=direction;send({type:"paddle",direction});}}});
+    document.addEventListener("keyup",(event)=>{const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){app.dodge[map[event.code]]=false;send({type:"dodge",...app.dodge});}if(["ArrowLeft","ArrowRight","KeyA","KeyD"].includes(event.code)){app.input=0;send({type:"paddle",direction:0});}});
     setInterval(()=>{if(app.room)render();},250); connect();
   </script>
 </body>

@@ -13,6 +13,15 @@ const WIDTH = 1000;
 const HEIGHT = 620;
 const TICK_MS = 1000 / 60;
 const MAX_DISCS = 9999;
+const PREDICTION_POWERS = {
+  mini: { price: 15, cooldown: 15 },
+  scramble: { price: 55, cooldown: 150 },
+  turbo: { price: 28, cooldown: 25, duration: 15 },
+  slow: { price: 22, cooldown: 25, duration: 15 },
+  grow: { price: 24, cooldown: 25, duration: 15 },
+  shrink: { price: 20, cooldown: 25, duration: 15 },
+  fire: { price: 36, cooldown: 75, duration: 60 },
+};
 
 const server = http.createServer((req, res) => {
   const requestedPath = req.url === "/" ? "/index.html" : req.url.split("?")[0];
@@ -156,6 +165,7 @@ function makePlayer(name) {
     connected: true,
     seat: null,
     input: 0,
+    dodge: { up: false, down: false, left: false, right: false },
   };
 }
 
@@ -221,6 +231,31 @@ function handleMessage(client, message) {
 
   if (message.type === "place-bet") {
     placeBet(room, player, message);
+    return;
+  }
+
+  if (message.type === "place-mini-bet") {
+    placeMiniBet(room, player, message);
+    return;
+  }
+
+  if (message.type === "buy-power") {
+    buyPredictionPower(room, player, message.power);
+    return;
+  }
+
+  if (message.type === "dodge") {
+    if (room.prediction?.fire?.phase === "active" || room.prediction?.fire?.phase === "countdown") {
+      player.dodge = {
+        up: Boolean(message.up), down: Boolean(message.down),
+        left: Boolean(message.left), right: Boolean(message.right),
+      };
+    }
+    return;
+  }
+
+  if (message.type === "reset-angle") {
+    if (isHost(room, player) && room.phase === "resolving" && room.prediction?.ball) scramblePrediction(room.prediction);
     return;
   }
 
@@ -297,22 +332,29 @@ function takePongSeat(room, player, requestedSeat) {
   broadcastState(room);
 }
 
-function startPredictionBetting(room) {
-  if (room.phase !== "lobby") return;
+function startPredictionBetting(room, continuing = false) {
+  if (!continuing && room.phase !== "lobby") return;
   for (const player of room.players.values()) player.roundWon = 0;
   room.phase = "betting";
+  const previous = continuing ? room.prediction : null;
   room.prediction = {
     roundId: crypto.randomUUID(),
     mode: room.predictionStyle,
     bets: [],
     closesAt: Date.now() + 20000,
     result: null,
-    ball: null,
-    bounces: 0,
+    ball: previous?.ball || null,
+    bounces: previous?.bounces || 0,
+    startBounces: previous?.bounces || 0,
     hitAt: null,
     aimedForCorner: false,
     lastTick: null,
     pot: 0,
+    effects: [],
+    cooldowns: previous?.cooldowns || {},
+    mini: null,
+    fire: null,
+    frozen: false,
   };
   broadcastState(room);
 
@@ -327,7 +369,13 @@ function placeBet(room, player, payload) {
   const min = Math.floor(Number(payload.min));
   const max = kind === "exact" ? min : Math.floor(Number(payload.max));
 
-  if (!Number.isInteger(stake) || stake < 1 || stake > player.discs) {
+  const width = max - min + 1;
+  const stakeCap = maxStakeForBet(player.discs, kind, width);
+  if (!Number.isInteger(stake) || stake < 1 || stake > stakeCap) {
+    sendToPlayer(room, player.id, { type: "error", message: `This call can stake at most ${stakeCap} discs.` });
+    return;
+  }
+  if (stake > player.discs) {
     sendToPlayer(room, player.id, { type: "error", message: "You need enough discs for that bet." });
     return;
   }
@@ -353,8 +401,8 @@ function placeBet(room, player, payload) {
 function beginPredictionAnimation(room) {
   if (room.phase !== "betting" || !room.prediction) return;
   const prediction = room.prediction;
-  prediction.result = choosePredictionResult(prediction.mode);
-  prediction.ball = createPredictionBall();
+  prediction.result = prediction.bounces + choosePredictionResult(prediction.mode);
+  prediction.ball = prediction.ball || createPredictionBall();
   prediction.lastTick = Date.now();
   room.phase = "resolving";
   broadcastState(room);
@@ -377,7 +425,15 @@ function createPredictionBall() {
 function stepPrediction(room, deltaSeconds) {
   const prediction = room.prediction;
   const ball = prediction?.ball;
-  if (!prediction || !ball || prediction.hitAt) return;
+  if (!prediction || !ball) return;
+  if (prediction.hitAt) { stepMini(room, deltaSeconds); return; }
+
+  if (prediction.frozen) {
+    stepFireDodge(room, deltaSeconds);
+    return;
+  }
+  stepFireDodge(room, deltaSeconds);
+  applyPredictionEffects(prediction);
 
   let remaining = deltaSeconds;
   let safety = 0;
@@ -417,10 +473,11 @@ function stepPrediction(room, deltaSeconds) {
 
     if (hitVertical && hitHorizontal) {
       prediction.hitAt = prediction.bounces;
-      prediction.resolveTimer = setTimeout(() => resolvePrediction(room), 1400);
+      if (prediction.mini?.phase !== "active") prediction.resolveTimer = setTimeout(() => resolvePrediction(room), 1400);
       break;
     }
   }
+  stepMini(room, deltaSeconds);
 }
 
 function aimPredictionAtCorner(ball) {
@@ -436,7 +493,7 @@ function aimPredictionAtCorner(ball) {
   const dx = target.x - ball.x;
   const dy = target.y - ball.y;
   const distance = Math.hypot(dx, dy) || 1;
-  const speed = 520;
+  const speed = Math.hypot(ball.vx, ball.vy) || 520;
   ball.vx = (dx / distance) * speed;
   ball.vy = (dy / distance) * speed;
 }
@@ -452,7 +509,8 @@ function choosePredictionResult(mode) {
 function resolvePrediction(room) {
   if (room.phase !== "resolving" || !room.prediction?.result) return;
   const prediction = room.prediction;
-  const winners = prediction.bets.filter((bet) => prediction.result >= bet.min && prediction.result <= bet.max);
+  const relativeResult = prediction.result - prediction.startBounces;
+  const winners = prediction.bets.filter((bet) => relativeResult >= bet.min && relativeResult <= bet.max);
   const totalShares = winners.reduce((sum, bet) => sum + (bet.kind === "exact" ? 2 : 1), 0);
 
   if (totalShares > 0) {
@@ -469,7 +527,180 @@ function resolvePrediction(room) {
   room.phase = "results";
   prediction.winners = winners.map((winner) => ({ ...winner, shares: winner.kind === "exact" ? 2 : 1 }));
   broadcastState(room);
-  prediction.resultsTimer = setTimeout(() => resetToLobby(room), 8500);
+  prediction.resultsTimer = setTimeout(() => {
+    if (room.predictionStyle === "normal") startPredictionBetting(room, true);
+    else resetToLobby(room);
+  }, 8500);
+}
+
+function maxStakeForBet(discs, kind, width) {
+  if (kind === "exact" || width <= 14) return discs;
+  const fraction = Math.max(0.2, 0.85 - ((width - 15) / 135) * 0.65);
+  return Math.max(1, Math.floor(discs * fraction));
+}
+
+function buyPredictionPower(room, player, key) {
+  const prediction = room.prediction;
+  const power = PREDICTION_POWERS[key];
+  if (!prediction || room.phase !== "resolving" || !power) return;
+  if (key === "fire" && room.maxPlayers === null) {
+    sendToPlayer(room, player.id, { type: "error", message: "Fire Dodge is disabled in unlimited rooms." });
+    return;
+  }
+  const remaining = Math.max(0, (prediction.cooldowns[key] || 0) - Date.now());
+  if (remaining) {
+    sendToPlayer(room, player.id, { type: "error", message: `${key} is cooling down for ${Math.ceil(remaining / 1000)}s.` });
+    return;
+  }
+  if (player.discs < power.price) {
+    sendToPlayer(room, player.id, { type: "error", message: `You need ${power.price} discs for this power.` });
+    return;
+  }
+  player.discs -= power.price;
+  prediction.cooldowns[key] = Date.now() + power.cooldown * 1000;
+
+  if (key === "mini") {
+    prediction.frozen = true;
+    prediction.mini = { phase: "betting", closesAt: Date.now() + 8000, bets: [], pot: 0, ownerId: player.id };
+    room.phase = "mini-betting";
+    prediction.mini.timer = setTimeout(() => launchMini(room), 8000);
+  } else if (key === "scramble") {
+    scramblePrediction(prediction);
+  } else if (key === "fire") {
+    prediction.frozen = true;
+    prediction.fire = { phase: "countdown", countdown: 5, players: {} };
+    for (const entry of room.players.values()) {
+      if (entry.connected) prediction.fire.players[entry.id] = { x: randomInt(30, WIDTH - 56), y: randomInt(30, HEIGHT - 56), hitCooldown: 0 };
+    }
+  } else {
+    prediction.effects.push({ type: key, expiresAt: Date.now() + power.duration * 1000 });
+    applyPredictionEffects(prediction);
+  }
+  broadcastState(room);
+}
+
+function scramblePrediction(prediction) {
+  const speed = Math.hypot(prediction.ball.vx, prediction.ball.vy) || 520;
+  const angle = Math.random() * Math.PI * 2;
+  prediction.ball.vx = Math.cos(angle) * speed;
+  prediction.ball.vy = Math.sin(angle) * speed;
+}
+
+function applyPredictionEffects(prediction) {
+  const ball = prediction.ball;
+  if (!ball) return;
+  prediction.effects = prediction.effects.filter((effect) => effect.expiresAt > Date.now());
+  const speedFactor = prediction.effects.reduce((total, effect) => total * (effect.type === "turbo" ? 1.45 : effect.type === "slow" ? 0.68 : effect.type === "fire" ? 1.6 : 1), 1);
+  const sizeFactor = prediction.effects.reduce((total, effect) => total * (effect.type === "grow" ? 1.42 : effect.type === "shrink" ? 0.62 : 1), 1);
+  const currentSpeed = ball.effectSpeedFactor || 1;
+  const centerX = ball.x + ball.width / 2;
+  const centerY = ball.y + ball.height / 2;
+  ball.vx *= speedFactor / currentSpeed;
+  ball.vy *= speedFactor / currentSpeed;
+  ball.effectSpeedFactor = speedFactor;
+  ball.width = 150 * sizeFactor;
+  ball.height = 82 * sizeFactor;
+  ball.x = clamp(centerX - ball.width / 2, 0, WIDTH - ball.width);
+  ball.y = clamp(centerY - ball.height / 2, 0, HEIGHT - ball.height);
+}
+
+function placeMiniBet(room, player, payload) {
+  const mini = room.prediction?.mini;
+  const number = Math.floor(Number(payload.number));
+  const stake = Math.floor(Number(payload.stake));
+  if (room.phase !== "mini-betting" || !mini || mini.phase !== "betting") return;
+  if (!Number.isInteger(number) || number < 1 || number > 10 || !Number.isInteger(stake) || stake < 1 || stake > player.discs) {
+    sendToPlayer(room, player.id, { type: "error", message: "Choose one number from 1 to 10 and a valid stake." });
+    return;
+  }
+  if (mini.bets.some((bet) => bet.playerId === player.id)) return;
+  player.discs -= stake;
+  mini.pot += stake;
+  mini.bets.push({ playerId: player.id, playerName: player.name, number, stake });
+  broadcastState(room);
+}
+
+function launchMini(room) {
+  const prediction = room.prediction;
+  const mini = prediction?.mini;
+  if (!mini || room.phase !== "mini-betting") return;
+  mini.phase = "active";
+  mini.ball = { ...createPredictionBall(), width: 112, height: 62 };
+  mini.target = randomInt(1, 10);
+  mini.bounces = 0;
+  room.phase = "resolving";
+  prediction.frozen = false;
+  broadcastState(room);
+}
+
+function stepMini(room, deltaSeconds) {
+  const prediction = room.prediction;
+  const mini = prediction?.mini;
+  if (!mini || mini.phase !== "active") return;
+  if (mini.bounces === mini.target - 1) aimPredictionAtCorner(mini.ball);
+  stepMovingBall(mini.ball, deltaSeconds, (both) => {
+    mini.bounces += 1;
+    if (!both) return;
+    const winners = mini.bets.filter((bet) => bet.number === mini.bounces);
+    if (winners.length) {
+      const share = Math.floor(mini.pot / winners.length);
+      for (const bet of winners) {
+        const winner = room.players.get(bet.playerId);
+        if (winner) { winner.discs = Math.min(MAX_DISCS, winner.discs + share); winner.roundWon += share; }
+      }
+    }
+    mini.winners = winners;
+    mini.result = mini.bounces;
+    mini.phase = "result";
+    setTimeout(() => {
+      if (prediction.mini !== mini) return;
+      prediction.mini = null;
+      if (prediction.hitAt) prediction.resolveTimer = setTimeout(() => resolvePrediction(room), 800);
+    }, 3200);
+  });
+}
+
+function stepMovingBall(ball, deltaSeconds, onHit) {
+  let remaining = deltaSeconds;
+  while (remaining > 0) {
+    const maxX = WIDTH - ball.width, maxY = HEIGHT - ball.height;
+    const tx = ball.vx > 0 ? (maxX - ball.x) / ball.vx : (0 - ball.x) / ball.vx;
+    const ty = ball.vy > 0 ? (maxY - ball.y) / ball.vy : (0 - ball.y) / ball.vy;
+    const hitTime = Math.min(tx >= 0 ? tx : Infinity, ty >= 0 ? ty : Infinity);
+    if (!Number.isFinite(hitTime) || hitTime > remaining) { ball.x += ball.vx * remaining; ball.y += ball.vy * remaining; break; }
+    ball.x += ball.vx * hitTime; ball.y += ball.vy * hitTime; remaining -= hitTime;
+    const hitX = Math.abs(tx - hitTime) < 0.00001, hitY = Math.abs(ty - hitTime) < 0.00001;
+    ball.x = clamp(ball.x, 0, maxX); ball.y = clamp(ball.y, 0, maxY);
+    if (hitX) ball.vx *= -1; if (hitY) ball.vy *= -1;
+    if (onHit(hitX && hitY)) break;
+  }
+}
+
+function stepFireDodge(room, deltaSeconds) {
+  const prediction = room.prediction, fire = prediction?.fire;
+  if (!fire) return;
+  if (fire.phase === "countdown") {
+    fire.countdown -= deltaSeconds;
+    if (fire.countdown <= 0) {
+      fire.phase = "active";
+      prediction.frozen = false;
+      prediction.effects.push({ type: "fire", expiresAt: Date.now() + PREDICTION_POWERS.fire.duration * 1000 });
+    }
+    return;
+  }
+  if (fire.phase !== "active") return;
+  const ball = prediction.ball;
+  for (const player of room.players.values()) {
+    const cube = fire.players[player.id]; if (!cube || !player.connected) continue;
+    cube.x = clamp(cube.x + ((player.dodge.right ? 1 : 0) - (player.dodge.left ? 1 : 0)) * 330 * deltaSeconds, 0, WIDTH - 26);
+    cube.y = clamp(cube.y + ((player.dodge.down ? 1 : 0) - (player.dodge.up ? 1 : 0)) * 330 * deltaSeconds, 0, HEIGHT - 26);
+    cube.hitCooldown = Math.max(0, cube.hitCooldown - deltaSeconds);
+    if (!cube.hitCooldown && cube.x < ball.x + ball.width && cube.x + 26 > ball.x && cube.y < ball.y + ball.height && cube.y + 26 > ball.y) {
+      player.discs = Math.max(0, player.discs - 5); cube.hitCooldown = 0.8;
+      cube.x = randomInt(20, WIDTH - 50); cube.y = randomInt(20, HEIGHT - 50);
+    }
+  }
+  if (!prediction.effects.some((effect) => effect.type === "fire" && effect.expiresAt > Date.now())) prediction.fire = null;
 }
 
 function startPong(room) {
@@ -646,6 +877,7 @@ function publicState(room) {
         mode: room.prediction.mode,
         closesAt: room.prediction.closesAt,
         bounces: room.prediction.bounces,
+        startBounces: room.prediction.startBounces,
         hitAt: room.prediction.hitAt,
         ball: room.prediction.ball,
         result: room.phase === "results" ? room.prediction.result : null,
@@ -653,6 +885,20 @@ function publicState(room) {
         betCount: room.prediction.bets.length,
         bets: room.prediction.bets,
         winners: room.prediction.winners || [],
+        effects: room.prediction.effects.filter((effect) => effect.expiresAt > Date.now()),
+        cooldowns: room.prediction.cooldowns,
+        frozen: room.prediction.frozen,
+        fire: room.prediction.fire,
+        mini: room.prediction.mini && {
+          phase: room.prediction.mini.phase,
+          closesAt: room.prediction.mini.closesAt,
+          bets: room.prediction.mini.bets,
+          pot: room.prediction.mini.pot,
+          ball: room.prediction.mini.ball,
+          bounces: room.prediction.mini.bounces,
+          result: room.prediction.mini.result,
+          winners: room.prediction.mini.winners || [],
+        },
       },
       pong: room.pong && {
         score: room.pong.score,
