@@ -724,6 +724,9 @@ function startPong(room) {
     },
     ball: createPongBall(Math.random() < 0.5 ? 1 : -1),
     lastTick: Date.now(),
+    power: null,
+    powerTimer: 6,
+    effect: null,
   };
   broadcastState(room);
 }
@@ -758,6 +761,16 @@ function stepPong(room, deltaSeconds) {
   }
 
   const ball = pong.ball;
+  pong.powerTimer -= deltaSeconds;
+  if (!pong.power && pong.powerTimer <= 0) {
+    const types = ["turbo", "slow", "grow", "shrink", "fire"];
+    pong.power = { type: types[randomInt(0, types.length - 1)], x: randomInt(130, WIDTH - 130), y: randomInt(160, HEIGHT - 160) };
+    pong.powerTimer = 7;
+  }
+  if (pong.effect) {
+    pong.effect.expiresAt -= deltaSeconds;
+    if (pong.effect.expiresAt <= 0) clearPongEffect(pong);
+  }
   ball.x += ball.vx * deltaSeconds;
   ball.y += ball.vy * deltaSeconds;
 
@@ -769,10 +782,17 @@ function stepPong(room, deltaSeconds) {
   const topPaddle = pong.paddle.top;
   const bottomPaddle = pong.paddle.bottom;
   if (ball.vy < 0 && collides(ball, topPaddle)) {
+    if (pong.effect?.type === "fire") { scorePong(room, "bottom"); return; }
     hitPaddle(ball, topPaddle, 1);
   }
   if (ball.vy > 0 && collides(ball, bottomPaddle)) {
+    if (pong.effect?.type === "fire") { scorePong(room, "top"); return; }
     hitPaddle(ball, bottomPaddle, -1);
+  }
+
+  if (pong.power && Math.hypot(ball.x + ball.width / 2 - pong.power.x, ball.y + ball.height / 2 - pong.power.y) < 52) {
+    applyPongPower(pong, pong.power.type);
+    pong.power = null;
   }
 
   const touchingTopCorner = (ball.x <= 1 || ball.x + ball.width >= WIDTH - 1) && ball.y <= 1;
@@ -784,8 +804,36 @@ function stepPong(room, deltaSeconds) {
     ball.cornerLatched = false;
   }
 
-  if (ball.y + ball.height < -30) scorePong(room, "bottom");
-  if (ball.y > HEIGHT + 30) scorePong(room, "top");
+  if (pong.effect?.type === "fire" && (ball.y <= 0 || ball.y + ball.height >= HEIGHT)) {
+    ball.y = clamp(ball.y, 0, HEIGHT - ball.height); ball.vy *= -1;
+  } else {
+    if (ball.y + ball.height < -30) scorePong(room, "bottom");
+    if (ball.y > HEIGHT + 30) scorePong(room, "top");
+  }
+}
+
+function clearPongEffect(pong) {
+  const effect = pong.effect, ball = pong.ball;
+  if (!effect) return;
+  if (effect.type === "turbo") { ball.vx /= 1.45; ball.vy /= 1.45; ball.speed /= 1.45; }
+  if (effect.type === "slow") { ball.vx /= 0.68; ball.vy /= 0.68; ball.speed /= 0.68; }
+  if (effect.type === "grow" || effect.type === "shrink") {
+    const x = ball.x + ball.width / 2, y = ball.y + ball.height / 2;
+    ball.width = 120; ball.height = 66; ball.x = clamp(x - 60, 0, WIDTH - 120); ball.y = clamp(y - 33, 0, HEIGHT - 66);
+  }
+  pong.effect = null;
+}
+
+function applyPongPower(pong, type) {
+  clearPongEffect(pong);
+  const ball = pong.ball;
+  pong.effect = { type, expiresAt: 6 };
+  if (type === "turbo") { ball.vx *= 1.45; ball.vy *= 1.45; ball.speed *= 1.45; }
+  if (type === "slow") { ball.vx *= 0.68; ball.vy *= 0.68; ball.speed *= 0.68; }
+  if (type === "grow" || type === "shrink") {
+    const factor = type === "grow" ? 1.42 : 0.62, x = ball.x + ball.width / 2, y = ball.y + ball.height / 2;
+    ball.width = 120 * factor; ball.height = 66 * factor; ball.x = clamp(x - ball.width / 2, 0, WIDTH - ball.width); ball.y = clamp(y - ball.height / 2, 0, HEIGHT - ball.height);
+  }
 }
 
 function collides(ball, paddle) {
@@ -809,6 +857,7 @@ function scorePong(room, seat) {
     finishPong(room, seat, "First to five");
     return;
   }
+  pong.effect = null;
   pong.ball = createPongBall(seat === "top" ? 1 : -1);
 }
 
@@ -904,6 +953,8 @@ function publicState(room) {
         score: room.pong.score,
         paddle: room.pong.paddle,
         ball: room.pong.ball,
+        power: room.pong.power,
+        effect: room.pong.effect,
         result: room.pong.result || null,
       },
     },
