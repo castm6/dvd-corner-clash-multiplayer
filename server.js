@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const type = filePath.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
+  const type = filePath.endsWith(".html") ? "text/html; charset=utf-8" : filePath.endsWith(".mp4") ? "video/mp4" : "text/plain; charset=utf-8";
   res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" });
   fs.createReadStream(filePath).pipe(res);
 });
@@ -420,7 +420,7 @@ function startDerbyBetting(room) {
   derby.bets = []; derby.pot = 0; derby.winnerId = null; derby.closesAt = Date.now() + 22000;
   derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; logo.aimedForCorner = false; });
   room.phase = "derby-betting";
-  derby.bettingTimer = setTimeout(() => startDerbyRace(room), 22000);
+  derby.bettingTimer = setTimeout(() => beginDerbyCountdown(room), 22000);
   broadcastState(room);
   if (room.solo) setTimeout(() => autoDerbyBets(room), 400);
 }
@@ -435,6 +435,14 @@ function autoDerbyBets(room) {
   broadcastState(room);
 }
 
+function beginDerbyCountdown(room) {
+  if (room.phase !== "derby-betting" || !room.derby) return;
+  room.phase = "derby-countdown";
+  room.derby.countdownEndsAt = Date.now() + 5000;
+  broadcastState(room);
+  room.derby.countdownTimer = setTimeout(() => startDerbyRace(room), 5000);
+}
+
 function placeDerbyBet(room, player, payload) {
   const derby = room.derby, logoId = Math.floor(Number(payload.logoId)), stake = Math.floor(Number(payload.stake));
   if (room.phase !== "derby-betting" || !derby) return;
@@ -447,7 +455,7 @@ function placeDerbyBet(room, player, payload) {
 }
 
 function startDerbyRace(room) {
-  if (room.phase !== "derby-betting" || !room.derby) return;
+  if (room.phase !== "derby-countdown" || !room.derby) return;
   room.phase = "derby-racing"; room.derby.lastTick = Date.now(); broadcastState(room);
 }
 
@@ -538,7 +546,7 @@ function startPredictionBetting(room, continuing = false) {
   broadcastState(room);
   if (room.solo) setTimeout(() => autoPredictionBets(room), 400);
 
-  room.prediction.bettingTimer = setTimeout(() => beginPredictionAnimation(room), 20000);
+  room.prediction.bettingTimer = setTimeout(() => beginPredictionCountdown(room), 20000);
 }
 
 function autoPredictionBets(room) {
@@ -549,6 +557,14 @@ function autoPredictionBets(room) {
     bot.discs -= stake; room.prediction.pot += stake; room.prediction.bets.push({ playerId: bot.id, playerName: bot.name, kind: min === max ? "exact" : "range", min, max, stake });
   }
   broadcastState(room);
+}
+
+function beginPredictionCountdown(room) {
+  if (room.phase !== "betting" || !room.prediction) return;
+  room.phase = "countdown";
+  room.prediction.countdownEndsAt = Date.now() + 5000;
+  broadcastState(room);
+  room.prediction.countdownTimer = setTimeout(() => beginPredictionAnimation(room), 5000);
 }
 
 function placeBet(room, player, payload) {
@@ -589,7 +605,7 @@ function placeBet(room, player, payload) {
 }
 
 function beginPredictionAnimation(room) {
-  if (room.phase !== "betting" || !room.prediction) return;
+  if (room.phase !== "countdown" || !room.prediction) return;
   const prediction = room.prediction;
   prediction.result = prediction.bounces + choosePredictionResult(prediction.mode);
   prediction.ball = prediction.ball || createPredictionBall();
@@ -1070,8 +1086,10 @@ function finishPong(room, winnerSeat, reason) {
 function resetToLobby(room) {
   clearTimeout(room.prediction?.bettingTimer);
   clearTimeout(room.prediction?.resolveTimer);
+  clearTimeout(room.prediction?.countdownTimer);
   clearTimeout(room.derby?.bettingTimer);
   clearTimeout(room.derby?.resultsTimer);
+  clearTimeout(room.derby?.countdownTimer);
   room.phase = "lobby";
   room.prediction = null;
   room.pong = null;
@@ -1124,6 +1142,7 @@ function publicState(room) {
       prediction: room.prediction && {
         mode: room.prediction.mode,
         closesAt: room.prediction.closesAt,
+        countdownEndsAt: room.prediction.countdownEndsAt,
         bounces: room.prediction.bounces,
         startBounces: room.prediction.startBounces,
         hitAt: room.prediction.hitAt,
@@ -1158,6 +1177,7 @@ function publicState(room) {
       },
       derby: room.derby && {
         closesAt: room.derby.closesAt,
+        countdownEndsAt: room.derby.countdownEndsAt,
         pot: room.derby.pot,
         betCount: room.derby.bets.length,
         winnerId: room.derby.winnerId,
