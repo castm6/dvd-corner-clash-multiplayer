@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const PORT = Number(process.env.PORT || 3000);
 const rooms = new Map();
+const clients = new Set();
 
 const WIDTH = 1000;
 const HEIGHT = 620;
@@ -73,6 +74,9 @@ server.on("upgrade", (req, socket) => {
     roomCode: null,
     playerId: null,
   };
+
+  clients.add(client);
+  sendRoomList(client);
 
   socket.on("data", (chunk) => receiveTextFrame(client, chunk));
   socket.on("close", () => disconnect(client));
@@ -140,14 +144,15 @@ function receiveTextFrame(client, data) {
   client.pending = buffer;
 }
 
-function createRoom() {
-  let code;
-  do {
-    code = crypto.randomBytes(3).toString("hex").toUpperCase();
-  } while (rooms.has(code));
+function createRoom(requestedCode, isPublic, solo) {
+  let code = normalizeRoomCode(requestedCode);
+  if (code && rooms.has(code)) return null;
+  if (!code) do { code = crypto.randomBytes(3).toString("hex").toUpperCase(); } while (rooms.has(code));
 
   const room = {
     code,
+    isPublic: Boolean(isPublic) && !solo,
+    solo: Boolean(solo),
     createdAt: Date.now(),
     hostId: null,
     clients: new Set(),
@@ -164,6 +169,12 @@ function createRoom() {
   return room;
 }
 
+function normalizeRoomCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  if (!code) return "";
+  return /^[A-Z0-9]{4,10}$/.test(code) ? code : null;
+}
+
 function makePlayer(name) {
   return {
     id: crypto.randomUUID(),
@@ -177,6 +188,23 @@ function makePlayer(name) {
   };
 }
 
+function addSoloBots(room, humanId) {
+  for (let index = 1; index <= 9; index += 1) {
+    const bot = makePlayer(`CPU ${index}`); bot.bot = true; room.players.set(bot.id, bot);
+  }
+  const human = room.players.get(humanId);
+  if (human) human.seat = "bottom";
+  const firstBot = [...room.players.values()].find((player) => player.bot);
+  if (firstBot) firstBot.seat = "top";
+}
+
+function sendRoomList(client) {
+  if (client.roomCode) return;
+  send(client, { type: "rooms", rooms: [...rooms.values()].filter((room) => room.isPublic && room.phase !== "results").map((room) => ({ code: room.code, mode: room.mode, phase: room.phase, playerCount: [...room.players.values()].filter((player) => player.connected || player.bot).length })) });
+}
+
+function broadcastRoomList() { for (const client of clients) sendRoomList(client); }
+
 function sanitizeName(name) {
   const value = String(name || "Player").trim().replace(/[^a-zA-Z0-9 _-]/g, "");
   return (value || "Player").slice(0, 16);
@@ -186,8 +214,13 @@ function handleMessage(client, message) {
   if (!message || typeof message.type !== "string") return;
 
   if (message.type === "create-room") {
-    const room = createRoom();
+    const requested = normalizeRoomCode(message.code);
+    if (requested === null) { send(client, { type: "error", message: "Custom room codes need 4-10 letters or numbers." }); return; }
+    const room = createRoom(requested, message.isPublic, message.solo);
+    if (!room) { send(client, { type: "error", message: "That room code is already taken." }); return; }
     joinRoom(client, room, message.name, true);
+    if (room.solo) addSoloBots(room, client.playerId);
+    broadcastRoomList();
     return;
   }
 
@@ -301,9 +334,11 @@ function joinRoom(client, room, name, isHost) {
   if (isHost || !room.hostId) room.hostId = player.id;
   send(client, { type: "joined", roomCode: room.code, playerId: player.id });
   broadcastState(room);
+  broadcastRoomList();
 }
 
 function disconnect(client) {
+  clients.delete(client);
   const room = rooms.get(client.roomCode);
   if (!room) return;
 
@@ -319,12 +354,14 @@ function disconnect(client) {
 
   if (room.clients.size === 0) {
     rooms.delete(room.code);
+    broadcastRoomList();
   } else {
     if (room.hostId === client.playerId) {
       const nextHost = [...room.players.values()].find((candidate) => candidate.connected);
       room.hostId = nextHost?.id || null;
     }
     broadcastState(room);
+    broadcastRoomList();
   }
 }
 
@@ -377,8 +414,23 @@ function startDerbyBetting(room) {
   const derby = room.derby;
   derby.bets = []; derby.pot = 0; derby.winnerId = null; derby.closesAt = Date.now() + 22000;
   derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; });
+  if (room.solo) {
+    const bots = [...room.players.values()].filter((player) => player.bot);
+    bots.forEach((bot, index) => { const logo = derby.logos[index + 1]; if (logo) logo.ownerId = bot.id; });
+  }
   room.phase = "derby-betting";
   derby.bettingTimer = setTimeout(() => startDerbyRace(room), 22000);
+  broadcastState(room);
+  if (room.solo) setTimeout(() => autoDerbyBets(room), 400);
+}
+
+function autoDerbyBets(room) {
+  if (room.phase !== "derby-betting" || !room.derby) return;
+  for (const bot of room.players.values()) {
+    if (!bot.bot || room.derby.bets.some((bet) => bet.playerId === bot.id)) continue;
+    const stake = Math.min(bot.discs, randomInt(4, 14)); const logoId = randomInt(1, 10);
+    bot.discs -= stake; room.derby.pot += stake; room.derby.bets.push({ playerId: bot.id, playerName: bot.name, logoId, stake });
+  }
   broadcastState(room);
 }
 
@@ -472,8 +524,19 @@ function startPredictionBetting(room, continuing = false) {
     frozen: false,
   };
   broadcastState(room);
+  if (room.solo) setTimeout(() => autoPredictionBets(room), 400);
 
   room.prediction.bettingTimer = setTimeout(() => beginPredictionAnimation(room), 20000);
+}
+
+function autoPredictionBets(room) {
+  if (room.phase !== "betting" || !room.prediction) return;
+  for (const bot of room.players.values()) {
+    if (!bot.bot || room.prediction.bets.some((bet) => bet.playerId === bot.id)) continue;
+    const min = randomInt(1, 440), max = Math.min(500, min + randomInt(0, 30)), stake = Math.min(bot.discs, randomInt(3, 12));
+    bot.discs -= stake; room.prediction.pot += stake; room.prediction.bets.push({ playerId: bot.id, playerName: bot.name, kind: min === max ? "exact" : "range", min, max, stake });
+  }
+  broadcastState(room);
 }
 
 function placeBet(room, player, payload) {
@@ -868,6 +931,7 @@ function stepPong(room, deltaSeconds) {
   const top = room.players.get(pong.topId);
   const bottom = room.players.get(pong.bottomId);
   if (!top || !bottom || !top.connected || !bottom.connected) return;
+  for (const [seat, player] of [["top", top], ["bottom", bottom]]) if (player.bot) player.input = clamp((pong.ball.x + pong.ball.width / 2 - (pong.paddle[seat].x + pong.paddle[seat].width / 2)) / 80, -1, 1);
 
   const paddleSpeed = 620;
   for (const [seat, player] of [["top", top], ["bottom", bottom]]) {

@@ -27,19 +27,26 @@
 </head>
 <body>
   <main class="shell">
-    <section id="landing" class="landing">
+    <section id="title-screen" class="landing">
+      <div class="panel"><p class="eyebrow">Real-time DVD arcade</p><h1>DVD Corner Clash</h1><p class="rules" style="margin-top:14px">Corners, discs, Derby racing, and chaotic Pong.</p><button id="title-start" class="primary" style="width:100%;margin-top:20px">Press any key or click to start</button></div>
+    </section>
+    <section id="mode-screen" class="landing hidden">
+      <div class="panel"><p class="eyebrow">Choose your route</p><h2>Play solo or together?</h2><div class="form-row"><button id="solo-button">Solo<small>Private room with CPU opponents.</small></button><button id="multiplayer-button">Multiplayer<small>Create, browse, or join a room.</small></button></div><button id="mode-back" style="margin-top:14px">Back</button></div>
+    </section>
+    <section id="landing" class="landing hidden">
       <div class="panel">
-        <p class="eyebrow">Real-time room-code arcade</p>
-        <h1>DVD Corner Clash</h1>
-        <p class="rules" style="margin-top:14px">Predict the bounce. Split the disc pot. Or grab a paddle and face someone in two-player DVD Pong.</p>
+        <p class="eyebrow">Multiplayer lobby</p><h2>Find a room</h2>
+        <p class="rules" style="margin-top:10px">Create a public room for the browser, a private room for friends, or join with a code.</p>
         <div class="form-row">
           <label>Display name<input id="name-input" maxlength="16" placeholder="Your name"></label>
-          <label>Room code<input id="room-input" maxlength="6" placeholder="Join a room"></label>
+          <label>Room code<input id="room-input" maxlength="10" placeholder="Join a room"></label>
         </div>
+        <div class="form-row"><label>Custom code (optional)<input id="custom-code" maxlength="10" placeholder="Random if blank"></label><label>Room visibility<select id="room-visibility"><option value="public">Public - listed</option><option value="private">Private - code only</option></select></label></div>
         <div class="form-row">
           <button id="create-button">Create Room</button>
           <button id="join-button">Join Room</button>
         </div>
+        <p class="eyebrow" style="margin-top:20px">Active public rooms</p><div id="public-rooms" class="players"><p class="info">No public rooms yet.</p></div><button id="lobby-back" style="margin-top:14px">Back</button>
         <p id="landing-notice" class="notice" style="margin-top:12px"></p>
       </div>
     </section>
@@ -121,7 +128,7 @@
   <script>
     const canvas = document.getElementById("arena");
     const ctx = canvas.getContext("2d");
-    const app = { socket:null, room:null, playerId:null, roomCode:null, lastError:"", input:0, modal:null, modalSignature:"", miniNumber:null, dodge:{up:false,down:false,left:false,right:false} };
+    const app = { socket:null, room:null, playerId:null, roomCode:null, rooms:[], lastError:"", input:0, modal:null, modalSignature:"", miniNumber:null, dodge:{up:false,down:false,left:false,right:false} };
     const powerInfo = { mini:["Mini Logo Bet",15,"Freeze the route and let everyone call one exact number from 1 to 10."], scramble:["Angle Scramble",55,"Host-only reset; changes the route without resetting the counter."], turbo:["Turbo",28,"Speed up the shared logo for 15 seconds."], slow:["Slow Field",22,"Slow the shared logo for 15 seconds."], grow:["Grow",24,"Make the shared logo larger for 15 seconds."], shrink:["Shrink",20,"Make the shared logo smaller for 15 seconds."], fire:["Fire Dodge",36,"Spawn cubes, count down, then dodge the fire logo for 60 seconds."] };
     const derbyPowerInfo = { turbo:["Turbo",22,"Speed up the selected racer."], slow:["Slow Field",18,"Slow the selected racer."], grow:["Grow",20,"Make the selected racer bigger."], shrink:["Shrink",18,"Make the selected racer smaller."], chaos:["Chaos Pulse",48,"Give every racer a random temporary effect."] };
     const $ = (id) => document.getElementById(id);
@@ -132,8 +139,9 @@
       app.socket = new WebSocket(`${protocol}://${location.host}`);
       app.socket.addEventListener("message", (event) => {
         const message = JSON.parse(event.data);
-        if (message.type === "joined") { app.roomCode = message.roomCode; app.playerId = message.playerId; $("landing").classList.add("hidden"); $("game").classList.remove("hidden"); }
+        if (message.type === "joined") { app.roomCode = message.roomCode; app.playerId = message.playerId; $("title-screen").classList.add("hidden"); $("mode-screen").classList.add("hidden"); $("landing").classList.add("hidden"); $("game").classList.remove("hidden"); }
         if (message.type === "state") { app.room = message.room; render(); }
+        if (message.type === "rooms") { app.rooms=message.rooms; renderPublicRooms(); }
         if (message.type === "error") { app.lastError = message.message; $("landing-notice").textContent = message.message; $("bet-status").textContent = message.message; $("modal-notice").textContent = message.message; }
       });
       app.socket.addEventListener("close", () => { if (app.roomCode) $("landing-notice").textContent = "Connection closed. Refresh to reconnect."; });
@@ -141,9 +149,13 @@
 
     function enter(kind) {
       const name = $("name-input").value.trim() || "Player";
-      if (kind === "create") send({ type:"create-room", name });
+      if (kind === "create") send({ type:"create-room", name, code:$("custom-code").value.trim(), isPublic:$("room-visibility").value==="public" });
       else send({ type:"join-room", name, code:$("room-input").value.trim() });
     }
+
+    function showScreen(id) { ["title-screen","mode-screen","landing","game"].forEach((screen)=>$(screen).classList.toggle("hidden",screen!==id)); }
+    function startSolo() { const name=prompt("Your display name", "Player") || "Player"; send({type:"create-room",name,solo:true,isPublic:false}); }
+    function renderPublicRooms() { const list=$("public-rooms"); if(!list) return; list.innerHTML=app.rooms.length?app.rooms.map((room)=>`<button data-public-room="${room.code}" class="player"><span><b>${room.code}</b><small class="seat">${room.mode} · ${room.phase}</small></span><strong>${room.playerCount} players</strong></button>`).join(""):'<p class="info">No public rooms yet. Create the first one.</p>'; }
 
     function isHost() { return app.room?.hostId === app.playerId; }
     function me() { return app.room?.players.find((player) => player.id === app.playerId); }
@@ -240,7 +252,11 @@
     function roundRect(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
     function escapeHtml(value){return String(value).replace(/[&<>"]/g,(char)=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[char]));}
 
+    $("title-start").onclick=()=>showScreen("mode-screen");
+    $("mode-back").onclick=()=>showScreen("title-screen"); $("lobby-back").onclick=()=>showScreen("mode-screen");
+    $("solo-button").onclick=startSolo; $("multiplayer-button").onclick=()=>showScreen("landing");
     $("create-button").onclick=()=>enter("create"); $("join-button").onclick=()=>enter("join");
+    $("public-rooms").onclick=(event)=>{const room=event.target.closest("[data-public-room]");if(room){$("room-input").value=room.dataset.publicRoom;enter("join");}};
     document.querySelectorAll("[data-mode]").forEach((button)=>button.onclick=()=>send({type:"set-mode",mode:button.dataset.mode,predictionStyle:button.dataset.style}));
     document.querySelectorAll("[data-seat]").forEach((button)=>button.onclick=()=>send({type:"take-seat",seat:button.dataset.seat}));
     $("start-button").onclick=()=>send({type:"start-round"});
@@ -255,7 +271,7 @@
     $("derby-logos").onclick=(event)=>{const claim=event.target.closest("[data-claim-logo]");if(claim)send({type:"claim-derby-logo",logoId:Number(claim.dataset.claimLogo)});};
     $("derby-bet-button").onclick=()=>send({type:"place-derby-bet",logoId:Number($("derby-logo-select").value),stake:Number($("derby-stake").value)});
     $("derby-shop-button").onclick=()=>{app.modal="shop";app.modalSignature="";renderModal();};
-    document.addEventListener("keydown",(event)=>{if(event.code==="Escape"&&!app.modal){app.modal="quit";app.modalSignature="";renderModal();return;}if(event.code==="Space"&&app.modal==="shop"){event.preventDefault();app.modal=null;app.modalSignature="";renderModal();return;} if(event.code==="KeyR"&&isHost())send({type:"reset-angle"}); if(app.room?.prediction?.fire){const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){event.preventDefault();app.dodge[map[event.code]]=true;send({type:"dodge",...app.dodge});}} if(!app.room||app.room.mode!=="pong")return; let direction=0;if(event.code==="ArrowLeft"||event.code==="KeyA")direction=-1;if(event.code==="ArrowRight"||event.code==="KeyD")direction=1;if(direction){event.preventDefault();if(app.input!==direction){app.input=direction;send({type:"paddle",direction});}}});
+    document.addEventListener("keydown",(event)=>{if(!app.room && !$("title-screen").classList.contains("hidden")){showScreen("mode-screen");return;}if(event.code==="Escape"&&!app.modal&&app.room){app.modal="quit";app.modalSignature="";renderModal();return;}if(event.code==="Space"&&app.modal==="shop"){event.preventDefault();app.modal=null;app.modalSignature="";renderModal();return;} if(event.code==="KeyR"&&isHost())send({type:"reset-angle"}); if(app.room?.prediction?.fire){const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){event.preventDefault();app.dodge[map[event.code]]=true;send({type:"dodge",...app.dodge});}} if(!app.room||app.room.mode!=="pong")return; let direction=0;if(event.code==="ArrowLeft"||event.code==="KeyA")direction=-1;if(event.code==="ArrowRight"||event.code==="KeyD")direction=1;if(direction){event.preventDefault();if(app.input!==direction){app.input=direction;send({type:"paddle",direction});}}});
     document.addEventListener("keyup",(event)=>{const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){app.dodge[map[event.code]]=false;send({type:"dodge",...app.dodge});}if(["ArrowLeft","ArrowRight","KeyA","KeyD"].includes(event.code)){app.input=0;send({type:"paddle",direction:0});}});
     setInterval(()=>{if(app.room)render();},250); connect();
   </script>
