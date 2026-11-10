@@ -386,7 +386,7 @@ function takePongSeat(room, player, requestedSeat) {
 
 function createDerby() {
   return {
-    logos: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, ownerId: null, effects: [], ball: createDerbyBall(index), bounces: 0, target: randomInt(35, 500) })),
+    logos: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, ownerId: null, effects: [], ball: createDerbyBall(index), bounces: 0, target: randomInt(35, 500), aimedForCorner: false })),
     bets: [], pot: 0, cooldowns: {}, closesAt: null, lastTick: null, winnerId: null,
   };
 }
@@ -413,7 +413,7 @@ function startDerbyBetting(room) {
   for (const player of room.players.values()) player.roundWon = 0;
   const derby = room.derby;
   derby.bets = []; derby.pot = 0; derby.winnerId = null; derby.closesAt = Date.now() + 22000;
-  derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; });
+  derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; logo.aimedForCorner = false; });
   if (room.solo) {
     const bots = [...room.players.values()].filter((player) => player.bot);
     bots.forEach((bot, index) => { const logo = derby.logos[index + 1]; if (logo) logo.ownerId = bot.id; });
@@ -479,7 +479,7 @@ function stepDerby(room, deltaSeconds) {
   const derby = room.derby; if (!derby || derby.winnerId) return;
   for (const logo of derby.logos) {
     applyDerbyEffects(logo);
-    if (logo.bounces === logo.target - 1) aimPredictionAtCorner(logo.ball);
+    if (logo.bounces === logo.target - 1 && !logo.aimedForCorner) { aimPredictionAtCorner(logo.ball); logo.aimedForCorner = true; }
     let cornered = false;
     stepMovingBall(logo.ball, deltaSeconds, (both) => { logo.bounces += 1; if (both) { cornered = true; return true; } return false; });
     if (cornered) { finishDerby(room, logo.id); return; }
@@ -815,7 +815,7 @@ function stepMini(room, deltaSeconds) {
   const prediction = room.prediction;
   const mini = prediction?.mini;
   if (!mini || mini.phase !== "active") return;
-  if (mini.bounces === mini.target - 1) aimPredictionAtCorner(mini.ball);
+  if (mini.bounces === mini.target - 1 && !mini.aimedForCorner) { aimPredictionAtCorner(mini.ball); mini.aimedForCorner = true; }
   stepMovingBall(mini.ball, deltaSeconds, (both) => {
     mini.bounces += 1;
     if (!both) return;
