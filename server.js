@@ -306,6 +306,11 @@ function handleMessage(client, message) {
     return;
   }
 
+  if (message.type === "reset-derby-angles") {
+    if (isHost(room, player) && room.phase === "derby-racing" && room.derby) resetDerbyAngles(room.derby);
+    return;
+  }
+
   if (message.type === "start-round") {
     if (!isHost(room, player)) return;
     if (room.mode === "pong") startPong(room);
@@ -414,10 +419,6 @@ function startDerbyBetting(room) {
   const derby = room.derby;
   derby.bets = []; derby.pot = 0; derby.winnerId = null; derby.closesAt = Date.now() + 22000;
   derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; logo.aimedForCorner = false; });
-  if (room.solo) {
-    const bots = [...room.players.values()].filter((player) => player.bot);
-    bots.forEach((bot, index) => { const logo = derby.logos[index + 1]; if (logo) logo.ownerId = bot.id; });
-  }
   room.phase = "derby-betting";
   derby.bettingTimer = setTimeout(() => startDerbyRace(room), 22000);
   broadcastState(room);
@@ -448,6 +449,17 @@ function placeDerbyBet(room, player, payload) {
 function startDerbyRace(room) {
   if (room.phase !== "derby-betting" || !room.derby) return;
   room.phase = "derby-racing"; room.derby.lastTick = Date.now(); broadcastState(room);
+}
+
+function resetDerbyAngles(derby) {
+  for (const logo of derby.logos) {
+    const speed = Math.hypot(logo.ball.vx, logo.ball.vy) || 320;
+    const angle = Math.random() * Math.PI * 2;
+    logo.ball.vx = Math.cos(angle) * speed;
+    logo.ball.vy = Math.sin(angle) * speed;
+    logo.aimedForCorner = false;
+    logo.target = Math.max(logo.bounces + 1, logo.target);
+  }
 }
 
 function buyDerbyPower(room, player, key, rawTarget) {
