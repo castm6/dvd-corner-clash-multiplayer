@@ -22,6 +22,13 @@ const PREDICTION_POWERS = {
   shrink: { price: 20, cooldown: 25, duration: 15 },
   fire: { price: 36, cooldown: 75, duration: 60 },
 };
+const DERBY_POWERS = {
+  turbo: { price: 22, cooldown: 20, duration: 12 },
+  slow: { price: 18, cooldown: 20, duration: 12 },
+  grow: { price: 20, cooldown: 20, duration: 12 },
+  shrink: { price: 18, cooldown: 20, duration: 12 },
+  chaos: { price: 48, cooldown: 35, duration: 10 },
+};
 
 const server = http.createServer((req, res) => {
   const requestedPath = req.url === "/" ? "/index.html" : req.url.split("?")[0];
@@ -151,6 +158,7 @@ function createRoom() {
     maxPlayers: 20,
     prediction: null,
     pong: null,
+    derby: null,
   };
   rooms.set(code, room);
   return room;
@@ -202,7 +210,9 @@ function handleMessage(client, message) {
 
   if (message.type === "set-mode") {
     if (!isHost(room, player) || room.phase !== "lobby") return;
-    room.mode = message.mode === "pong" ? "pong" : "prediction";
+    room.mode = message.mode === "pong" ? "pong" : message.mode === "derby" ? "derby" : "prediction";
+    if (room.mode === "derby") room.derby = createDerby();
+    else room.derby = null;
     if (message.predictionStyle === "normal" || message.predictionStyle === "chance") {
       room.predictionStyle = message.predictionStyle;
     }
@@ -234,6 +244,10 @@ function handleMessage(client, message) {
     return;
   }
 
+  if (message.type === "claim-derby-logo") { claimDerbyLogo(room, player, message.logoId); return; }
+  if (message.type === "place-derby-bet") { placeDerbyBet(room, player, message); return; }
+  if (message.type === "buy-derby-power") { buyDerbyPower(room, player, message.power, message.target); return; }
+
   if (message.type === "place-mini-bet") {
     placeMiniBet(room, player, message);
     return;
@@ -262,6 +276,7 @@ function handleMessage(client, message) {
   if (message.type === "start-round") {
     if (!isHost(room, player)) return;
     if (room.mode === "pong") startPong(room);
+    else if (room.mode === "derby") startDerbyBetting(room);
     else startPredictionBetting(room);
     return;
   }
@@ -330,6 +345,106 @@ function takePongSeat(room, player, requestedSeat) {
     if (candidate.id === player.id) candidate.seat = seat;
   }
   broadcastState(room);
+}
+
+function createDerby() {
+  return {
+    logos: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, ownerId: null, effects: [], ball: createDerbyBall(index), bounces: 0, target: randomInt(35, 500) })),
+    bets: [], pot: 0, cooldowns: {}, closesAt: null, lastTick: null, winnerId: null,
+  };
+}
+
+function createDerbyBall(index) {
+  const column = index % 5, row = Math.floor(index / 5);
+  const angle = Math.random() * Math.PI * 2, speed = 285 + randomInt(0, 70);
+  return { x: 70 + column * 180, y: 90 + row * 340, width: 102, height: 56, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, hue: (index * 36 + randomInt(0, 20)) % 360, effectSpeedFactor: 1 };
+}
+
+function claimDerbyLogo(room, player, rawId) {
+  if (room.mode !== "derby" || room.phase !== "lobby" || !room.derby) return;
+  const logoId = Math.floor(Number(rawId));
+  const logo = room.derby.logos.find((entry) => entry.id === logoId);
+  if (!logo || logo.ownerId) { sendToPlayer(room, player.id, { type: "error", message: "That DVD racer is already claimed." }); return; }
+  const alreadyOwns = room.derby.logos.some((entry) => entry.ownerId === player.id);
+  if (alreadyOwns) { sendToPlayer(room, player.id, { type: "error", message: "You can only own one Derby logo." }); return; }
+  logo.ownerId = player.id;
+  broadcastState(room);
+}
+
+function startDerbyBetting(room) {
+  if (room.phase !== "lobby" || !room.derby) return;
+  for (const player of room.players.values()) player.roundWon = 0;
+  const derby = room.derby;
+  derby.bets = []; derby.pot = 0; derby.winnerId = null; derby.closesAt = Date.now() + 22000;
+  derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; });
+  room.phase = "derby-betting";
+  derby.bettingTimer = setTimeout(() => startDerbyRace(room), 22000);
+  broadcastState(room);
+}
+
+function placeDerbyBet(room, player, payload) {
+  const derby = room.derby, logoId = Math.floor(Number(payload.logoId)), stake = Math.floor(Number(payload.stake));
+  if (room.phase !== "derby-betting" || !derby) return;
+  if (!derby.logos.some((logo) => logo.id === logoId) || !Number.isInteger(stake) || stake < 1 || stake > player.discs) {
+    sendToPlayer(room, player.id, { type: "error", message: "Choose a racer and a stake you can afford." }); return;
+  }
+  if (derby.bets.some((bet) => bet.playerId === player.id)) { sendToPlayer(room, player.id, { type: "error", message: "You already backed a racer this Derby." }); return; }
+  player.discs -= stake; derby.pot += stake; derby.bets.push({ playerId: player.id, playerName: player.name, logoId, stake });
+  broadcastState(room);
+}
+
+function startDerbyRace(room) {
+  if (room.phase !== "derby-betting" || !room.derby) return;
+  room.phase = "derby-racing"; room.derby.lastTick = Date.now(); broadcastState(room);
+}
+
+function buyDerbyPower(room, player, key, rawTarget) {
+  const derby = room.derby, power = DERBY_POWERS[key], target = Math.floor(Number(rawTarget));
+  if (room.mode !== "derby" || room.phase !== "derby-racing" || !derby || !power) return;
+  if (key !== "chaos" && !derby.logos.some((logo) => logo.id === target)) { sendToPlayer(room, player.id, { type: "error", message: "Choose a Derby logo to affect." }); return; }
+  const remaining = (derby.cooldowns[key] || 0) - Date.now();
+  if (remaining > 0) { sendToPlayer(room, player.id, { type: "error", message: `${key} is cooling down for ${Math.ceil(remaining / 1000)}s.` }); return; }
+  if (player.discs < power.price) { sendToPlayer(room, player.id, { type: "error", message: `You need ${power.price} discs for this power.` }); return; }
+  player.discs -= power.price; derby.cooldowns[key] = Date.now() + power.cooldown * 1000;
+  if (key === "chaos") {
+    derby.logos.forEach((logo) => logo.effects.push({ type: ["turbo", "slow", "grow", "shrink"][randomInt(0, 3)], expiresAt: Date.now() + power.duration * 1000 }));
+  } else {
+    derby.logos.find((logo) => logo.id === target).effects.push({ type: key, expiresAt: Date.now() + power.duration * 1000 });
+  }
+  derby.logos.forEach(applyDerbyEffects); broadcastState(room);
+}
+
+function applyDerbyEffects(logo) {
+  const ball = logo.ball; logo.effects = logo.effects.filter((effect) => effect.expiresAt > Date.now());
+  const speedFactor = logo.effects.reduce((total, effect) => total * (effect.type === "turbo" ? 1.4 : effect.type === "slow" ? 0.7 : 1), 1);
+  const sizeFactor = logo.effects.reduce((total, effect) => total * (effect.type === "grow" ? 1.32 : effect.type === "shrink" ? 0.72 : 1), 1);
+  const x = ball.x + ball.width / 2, y = ball.y + ball.height / 2, previous = ball.effectSpeedFactor || 1;
+  ball.vx *= speedFactor / previous; ball.vy *= speedFactor / previous; ball.effectSpeedFactor = speedFactor;
+  ball.width = 102 * sizeFactor; ball.height = 56 * sizeFactor; ball.x = clamp(x - ball.width / 2, 0, WIDTH - ball.width); ball.y = clamp(y - ball.height / 2, 0, HEIGHT - ball.height);
+}
+
+function stepDerby(room, deltaSeconds) {
+  const derby = room.derby; if (!derby || derby.winnerId) return;
+  for (const logo of derby.logos) {
+    applyDerbyEffects(logo);
+    if (logo.bounces === logo.target - 1) aimPredictionAtCorner(logo.ball);
+    let cornered = false;
+    stepMovingBall(logo.ball, deltaSeconds, (both) => { logo.bounces += 1; if (both) { cornered = true; return true; } return false; });
+    if (cornered) { finishDerby(room, logo.id); return; }
+  }
+}
+
+function finishDerby(room, winnerId) {
+  const derby = room.derby; derby.winnerId = winnerId;
+  const winningBets = derby.bets.filter((bet) => bet.logoId === winnerId);
+  const winnerLogo = derby.logos.find((logo) => logo.id === winnerId);
+  const ownerRoyalty = winnerLogo?.ownerId ? Math.floor(derby.pot * 0.08) : 0;
+  const owner = room.players.get(winnerLogo?.ownerId);
+  if (owner && ownerRoyalty) { owner.discs = Math.min(MAX_DISCS, owner.discs + ownerRoyalty); owner.roundWon += ownerRoyalty; }
+  const distributable = derby.pot - ownerRoyalty, totalStake = winningBets.reduce((sum, bet) => sum + bet.stake, 0);
+  for (const bet of winningBets) { const player = room.players.get(bet.playerId); if (!player) continue; const payout = totalStake ? Math.floor(distributable * bet.stake / totalStake) : 0; player.discs = Math.min(MAX_DISCS, player.discs + payout); player.roundWon += payout; bet.payout = payout; }
+  room.phase = "results"; derby.winningBets = winningBets; broadcastState(room);
+  derby.resultsTimer = setTimeout(() => resetToLobby(room), 9000);
 }
 
 function startPredictionBetting(room, continuing = false) {
@@ -879,9 +994,12 @@ function finishPong(room, winnerSeat, reason) {
 function resetToLobby(room) {
   clearTimeout(room.prediction?.bettingTimer);
   clearTimeout(room.prediction?.resolveTimer);
+  clearTimeout(room.derby?.bettingTimer);
+  clearTimeout(room.derby?.resultsTimer);
   room.phase = "lobby";
   room.prediction = null;
   room.pong = null;
+  if (room.mode === "derby") room.derby = createDerby();
   for (const player of room.players.values()) player.input = 0;
   broadcastState(room);
 }
@@ -898,6 +1016,11 @@ function loop() {
       const delta = Math.min((now - room.prediction.lastTick) / 1000, 0.04);
       room.prediction.lastTick = now;
       stepPrediction(room, delta);
+    }
+    if (room.phase === "derby-racing" && room.derby) {
+      const delta = Math.min((now - room.derby.lastTick) / 1000, 0.04);
+      room.derby.lastTick = now;
+      stepDerby(room, delta);
     }
     broadcastState(room);
   }
@@ -956,6 +1079,15 @@ function publicState(room) {
         power: room.pong.power,
         effect: room.pong.effect,
         result: room.pong.result || null,
+      },
+      derby: room.derby && {
+        closesAt: room.derby.closesAt,
+        pot: room.derby.pot,
+        betCount: room.derby.bets.length,
+        winnerId: room.derby.winnerId,
+        logos: room.derby.logos.map((logo) => ({ id: logo.id, ownerId: logo.ownerId, ball: logo.ball, bounces: logo.bounces, effects: logo.effects })),
+        winningBets: room.phase === "results" ? (room.derby.winningBets || []) : [],
+        cooldowns: room.derby.cooldowns,
       },
     },
   };

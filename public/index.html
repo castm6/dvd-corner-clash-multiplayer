@@ -20,7 +20,7 @@
     .arena-card { position:absolute; inset:0; display:grid; place-items:center; padding:20px; pointer-events:none; } .arena-card .card { max-width:500px; text-align:center; padding:24px; background:rgba(3,10,22,.78); border:1px solid var(--line); border-radius:20px; backdrop-filter:blur(10px); } .hidden { display:none !important; }
     .hud { position:absolute; inset:16px 16px auto; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; pointer-events:none; } .chip { padding:8px 10px; border:1px solid var(--line); border-radius:12px; background:rgba(4,13,28,.72); color:var(--muted); font-size:.82rem; } .chip strong { color:var(--ink); }
     .bet-form { display:grid; gap:10px; margin-top:12px; } .two { display:grid; grid-template-columns:1fr 1fr; gap:8px; } .info { color:var(--muted); font-size:.9rem; } .notice { min-height:22px; color:var(--gold); font-weight:700; } .result { color:var(--green); margin-top:12px; font-weight:800; }
-    .rules { color:var(--muted); font-size:.9rem; } .big { color:var(--gold); font:900 2rem Consolas,monospace; } .seat-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; } .shop-grid{display:grid;gap:8px;max-height:50vh;overflow:auto;margin-top:12px;padding-right:4px}.shop-item{text-align:left}.shop-item small{display:block;color:var(--muted);margin-top:4px;font-weight:400}.modal{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:rgba(0,4,12,.72);z-index:5}.modal .panel{width:min(520px,100%);max-height:calc(100vh - 36px);overflow:auto}.number-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0}.number-grid button.active{background:var(--gold);color:#071426}.top-actions{display:flex;gap:8px;align-items:center}.icon-button{padding:9px 12px;font-size:1.1rem}
+    .rules { color:var(--muted); font-size:.9rem; } .big { color:var(--gold); font:900 2rem Consolas,monospace; } .seat-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; } .shop-grid{display:grid;gap:8px;max-height:50vh;overflow:auto;margin-top:12px;padding-right:4px}.shop-item{text-align:left}.shop-item small{display:block;color:var(--muted);margin-top:4px;font-weight:400}.modal{position:fixed;inset:0;display:grid;place-items:center;padding:18px;background:rgba(0,4,12,.72);z-index:5}.modal .panel{width:min(520px,100%);max-height:calc(100vh - 36px);overflow:auto}.number-grid,.logo-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:14px 0}.number-grid button.active,.logo-grid button.active{background:var(--gold);color:#071426}.top-actions{display:flex;gap:8px;align-items:center}.icon-button{padding:9px 12px;font-size:1.1rem}
     @media (max-width:1000px) { .grid { grid-template-columns:1fr; } .right { order:3; } .arena { min-height:440px; } canvas { height:440px; } }
     @media (max-width:560px) { .shell { width:min(100% - 18px,1280px); } header { align-items:flex-start; flex-direction:column; } .status { text-align:left; } .form-row,.two { grid-template-columns:1fr; } .arena { min-height:390px; } canvas { height:390px; } }
   </style>
@@ -57,6 +57,7 @@
               <button data-mode="prediction" data-style="normal" id="prediction-normal-mode">Normal Corner Call<small>Watch the real DVD bounce path and call the bounce where its next corner lands.</small></button>
               <button data-mode="prediction" data-style="chance" id="prediction-chance-mode">500 Bounce Chance<small>Same real bounce path, with the next corner guaranteed by bounce 500.</small></button>
               <button data-mode="pong" id="pong-mode">2 Player Pong<small>Two people play. Everyone else watches.</small></button>
+              <button data-mode="derby" id="derby-mode">500 Corner Derby<small>Ten DVD racers. Back the first logo to hit a corner.</small></button>
             </div>
           </section>
           <section class="panel">
@@ -96,6 +97,16 @@
             <p class="info">Top uses A / D. Bottom uses Left / Right. First to 5 wins 25 discs; runner-up gets 5.</p>
             <div class="seat-buttons"><button data-seat="top">Take Top</button><button data-seat="bottom">Take Bottom</button></div>
           </section>
+          <section id="derby-panel" class="panel hidden">
+            <p class="eyebrow">500 Corner Derby</p>
+            <p class="info">Claim one racer in the lobby, then back exactly one logo. Stakes stay hidden until the winner is revealed.</p>
+            <div id="derby-logos" class="logo-grid"></div>
+            <label>Back racer<select id="derby-logo-select"></select></label>
+            <label style="margin-top:10px">Stake in discs<input id="derby-stake" type="number" min="1" value="10"></label>
+            <button id="derby-bet-button" style="width:100%;margin-top:10px">Lock Derby bet</button>
+            <p id="derby-status" class="notice"></p>
+            <button id="derby-shop-button" style="width:100%;margin-top:8px">Open Derby power shop</button>
+          </section>
           <section class="panel">
             <p class="eyebrow">Host controls</p>
             <label style="margin-top:10px">Prediction room size<select id="room-cap"><option value="20">20 players - Fire Dodge enabled</option><option value="unlimited">Unlimited players - Fire Dodge disabled</option></select></label>
@@ -112,6 +123,7 @@
     const ctx = canvas.getContext("2d");
     const app = { socket:null, room:null, playerId:null, roomCode:null, lastError:"", input:0, modal:null, modalSignature:"", miniNumber:null, dodge:{up:false,down:false,left:false,right:false} };
     const powerInfo = { mini:["Mini Logo Bet",15,"Freeze the route and let everyone call one exact number from 1 to 10."], scramble:["Angle Scramble",55,"Host-only reset; changes the route without resetting the counter."], turbo:["Turbo",28,"Speed up the shared logo for 15 seconds."], slow:["Slow Field",22,"Slow the shared logo for 15 seconds."], grow:["Grow",24,"Make the shared logo larger for 15 seconds."], shrink:["Shrink",20,"Make the shared logo smaller for 15 seconds."], fire:["Fire Dodge",36,"Spawn cubes, count down, then dodge the fire logo for 60 seconds."] };
+    const derbyPowerInfo = { turbo:["Turbo",22,"Speed up the selected racer."], slow:["Slow Field",18,"Slow the selected racer."], grow:["Grow",20,"Make the selected racer bigger."], shrink:["Shrink",18,"Make the selected racer smaller."], chaos:["Chaos Pulse",48,"Give every racer a random temporary effect."] };
     const $ = (id) => document.getElementById(id);
     const send = (message) => app.socket?.readyState === WebSocket.OPEN && app.socket.send(JSON.stringify(message));
 
@@ -146,34 +158,39 @@
       $("prediction-normal-mode").classList.toggle("active", room.mode === "prediction" && room.predictionStyle === "normal");
       $("prediction-chance-mode").classList.toggle("active", room.mode === "prediction" && room.predictionStyle === "chance");
       $("pong-mode").classList.toggle("active", room.mode === "pong");
+      $("derby-mode").classList.toggle("active", room.mode === "derby");
       $("prediction-panel").classList.toggle("hidden", room.mode !== "prediction");
       $("pong-panel").classList.toggle("hidden", room.mode !== "pong");
+      $("derby-panel").classList.toggle("hidden", room.mode !== "derby");
       $("start-button").disabled = !isHost() || room.phase !== "lobby";
       $("room-cap").disabled = !isHost() || room.phase !== "lobby";
       $("room-cap").value = room.maxPlayers === null ? "unlimited" : "20";
-      $("start-button").textContent = room.mode === "pong" ? "Start Pong Match" : "Open Betting";
-      $("host-help").textContent = isHost() ? (room.mode === "pong" ? "Two seated players are required." : room.maxPlayers === null ? "Unlimited room: Fire Dodge is disabled." : "20-player room: Fire Dodge will be available.") : "Only the room host can start.";
+      $("start-button").textContent = room.mode === "pong" ? "Start Pong Match" : room.mode === "derby" ? "Open Derby Betting" : "Open Betting";
+      $("host-help").textContent = isHost() ? (room.mode === "pong" ? "Two seated players are required." : room.mode === "derby" ? "Players can claim a racer now. Open betting whenever you are ready." : room.maxPlayers === null ? "Unlimited room: Fire Dodge is disabled." : "20-player room: Fire Dodge will be available.") : "Only the room host can start.";
       $("players").innerHTML = room.players.map((entry) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>${escapeHtml(entry.name)} ${entry.id === room.hostId ? "(host)" : ""}<small class="seat">${entry.seat || "spectator"}</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
       $("leaderboard").innerHTML = [...room.players].sort((a,b)=>b.discs-a.discs || b.roundWon-a.roundWon).map((entry,index) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>#${index+1} ${escapeHtml(entry.name)}<small class="seat">+${entry.roundWon || 0} this round</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
       const prediction = room.prediction;
-      $("pot-chip").innerHTML = `Pot: <strong>${prediction?.pot || 0} discs</strong>`;
+      const derby = room.derby;
+      $("pot-chip").innerHTML = `Pot: <strong>${room.mode === "derby" ? derby?.pot || 0 : prediction?.pot || 0} discs</strong>`;
       $("bet-board").innerHTML = prediction?.bets?.length ? prediction.bets.map((bet)=>`<div class="player"><span>${escapeHtml(bet.playerName)}<small class="seat">${bet.kind === "exact" ? `exact ${bet.min}` : `${bet.min}-${bet.max}`}</small></span><strong class="disc">${bet.stake}</strong></div>`).join("") : `<p class="info">No bets yet. Be the first call.</p>`;
       $("bet-button").disabled = room.phase !== "betting";
       updateBetCap();
       $("shop-button").disabled = room.mode !== "prediction" || room.phase !== "resolving" || Boolean(prediction?.mini?.phase === "active" || room.phase === "mini-betting");
       const effects = prediction?.effects?.map((effect)=>effect.type.toUpperCase()).join(" + ");
-      $("main-chip").textContent = room.phase === "betting" ? `Betting closes in ${Math.max(0, Math.ceil((prediction.closesAt - Date.now()) / 1000))}s` : room.phase === "mini-betting" ? `Mini bets close in ${Math.max(0, Math.ceil((prediction.mini.closesAt - Date.now()) / 1000))}s` : room.phase === "resolving" ? `${prediction.fire?.phase === "countdown" ? `Fire Dodge: ${Math.max(1,Math.ceil(prediction.fire.countdown))}` : `Bounces: ${prediction.bounces}${effects ? ` | ${effects}` : ""}`}` : room.mode === "pong" ? "Live 2 player arena" : "Prediction pool lobby";
+      $("main-chip").textContent = room.mode === "derby" ? (room.phase === "derby-betting" ? `Derby bets close in ${Math.max(0,Math.ceil((derby.closesAt-Date.now())/1000))}s` : room.phase === "derby-racing" ? `10 logos racing · ${derby.betCount} secret bets` : "Claim a racer or watch the Derby") : room.phase === "betting" ? `Betting closes in ${Math.max(0, Math.ceil((prediction.closesAt - Date.now()) / 1000))}s` : room.phase === "mini-betting" ? `Mini bets close in ${Math.max(0, Math.ceil((prediction.mini.closesAt - Date.now()) / 1000))}s` : room.phase === "resolving" ? `${prediction.fire?.phase === "countdown" ? `Fire Dodge: ${Math.max(1,Math.ceil(prediction.fire.countdown))}` : `Bounces: ${prediction.bounces}${effects ? ` | ${effects}` : ""}`}` : room.mode === "pong" ? "Live 2 player arena" : "Prediction pool lobby";
       const title = $("arena-title"), copy = $("arena-copy"), card = $("arena-card");
       if (room.phase === "results") { card.classList.remove("hidden"); renderResult(room, title, copy); }
-      else if (room.phase === "lobby") { card.classList.remove("hidden"); title.textContent = room.mode === "pong" ? "Two paddles. One ridiculous logo." : "Call the corner."; copy.textContent = room.mode === "pong" ? "Take a top or bottom seat. Spectators can watch every rally." : room.predictionStyle === "chance" ? "A real DVD route will bounce around the walls and must corner-hit by bounce 500. Bet the number or a range." : "A real DVD route will bounce around the walls. Bet the number or range where its next corner hit lands."; }
+      else if (room.phase === "lobby") { card.classList.remove("hidden"); title.textContent = room.mode === "pong" ? "Two paddles. One ridiculous logo." : room.mode === "derby" ? "Claim a DVD racer." : "Call the corner."; copy.textContent = room.mode === "pong" ? "Take a top or bottom seat. Spectators can watch every rally." : room.mode === "derby" ? "The first ten players can own a racer. When bets lock, all ten logos race to a guaranteed corner hit within 500 bounces." : room.predictionStyle === "chance" ? "A real DVD route will bounce around the walls and must corner-hit by bounce 500. Bet the number or a range." : "A real DVD route will bounce around the walls. Bet the number or range where its next corner hit lands."; }
       else { card.classList.add("hidden"); }
       if (room.phase === "mini-betting" && app.modal !== "mini") { app.modal = "mini"; app.modalSignature = ""; }
       renderModal();
+      renderDerby(room);
       draw(room);
     }
 
     function renderResult(room, title, copy) {
       if (room.mode === "pong") { const result = room.pong?.result; title.textContent = `${result?.winnerName || "Winner"} wins!`; copy.textContent = result?.reason || "Match complete."; return; }
+      if (room.mode === "derby") { const derby=room.derby, logo=derby?.logos.find((entry)=>entry.id===derby.winnerId), owner=room.players.find((player)=>player.id===logo?.ownerId); title.textContent=`DVD ${derby?.winnerId || "?"} wins the Derby!`; copy.textContent=owner?`${owner.name}'s racer earned the owner royalty. Winning bettors split the pot.`:"Winning bettors split the pot."; return; }
       const prediction = room.prediction; title.textContent = `Corner at bounce ${prediction?.result}!`; const winners = prediction?.winners || []; copy.textContent = winners.length ? `Pot split between ${winners.map((winner) => winner.playerName).join(", ")}.` : "Nobody called it. The pot vanished into the void.";
       $("prediction-result").textContent = `Result: ${prediction?.result || "?"}`;
     }
@@ -187,9 +204,10 @@
       app.modalSignature = signature;
       modal.classList.remove("hidden");
       if (app.modal === "shop") {
-        $("modal-eyebrow").textContent = "Prediction power shop";
-        $("modal-title").textContent = "Spend discs. Change the route.";
-        $("modal-body").innerHTML = `<p class="info">Every purchase affects the shared logo for everyone. Effects stack until their own timers expire.</p><div class="shop-grid">${Object.entries(powerInfo).filter(([key])=>key!=="fire"||room.fireDodgeEnabled).map(([key,[name,price,copy]])=>{const left=Math.max(0,Math.ceil(((prediction?.cooldowns?.[key]||0)-Date.now())/1000));return `<button class="shop-item" data-power="${key}" ${left?"disabled":""}><b>${name} · ${price} discs</b><small>${left?`${left}s cooldown`:copy}</small></button>`}).join("")}</div>`;
+        const derbyMode=room.mode==="derby", powers=derbyMode?derbyPowerInfo:powerInfo, cooldowns=derbyMode?room.derby?.cooldowns:prediction?.cooldowns;
+        $("modal-eyebrow").textContent = derbyMode ? "Derby power shop" : "Prediction power shop";
+        $("modal-title").textContent = derbyMode ? "Affect the race." : "Spend discs. Change the route.";
+        $("modal-body").innerHTML = `<p class="info">${derbyMode?"Select a racer to affect, or unleash Chaos Pulse on all ten logos.":"Every purchase affects the shared logo for everyone. Effects stack until their own timers expire."}</p>${derbyMode?`<label style="margin-top:12px">Target racer<select id="derby-power-target">${room.derby.logos.map((logo)=>`<option value="${logo.id}">DVD ${logo.id}</option>`).join("")}</select></label>`:""}<div class="shop-grid">${Object.entries(powers).filter(([key])=>key!=="fire"||room.fireDodgeEnabled).map(([key,[name,price,copy]])=>{const left=Math.max(0,Math.ceil(((cooldowns?.[key]||0)-Date.now())/1000));return `<button class="shop-item" data-power="${key}" ${left?"disabled":""}><b>${name} · ${price} discs</b><small>${left?`${left}s cooldown`:copy}</small></button>`}).join("")}</div>`;
         $("modal-close").textContent = "Close shop (Space)"; $("modal-close").disabled = false;
       } else if (app.modal === "mini") {
         const mini = prediction?.mini;
@@ -206,9 +224,12 @@
 
     function updateBetCap() { const player=me(), kind=$("bet-kind").value, min=Number($("bet-min").value), max=kind==="exact"?min:Number($("bet-max").value), width=Math.max(1,max-min+1), discs=player?.discs||0; const cap=kind==="exact"||width<=14?discs:Math.max(1,Math.floor(discs*Math.max(.2,.85-((width-15)/135)*.65))); $("bet-stake").max=cap; $("bet-status").textContent=`This ${kind==="exact"?"exact call":`${width}-bounce range`} can stake up to ${cap} discs.`; }
 
+    function renderDerby(room) { const derby=room.derby; if(!derby) return; const meId=app.playerId; $("derby-logos").innerHTML=derby.logos.map((logo)=>{const owner=room.players.find((player)=>player.id===logo.ownerId);return `<button data-claim-logo="${logo.id}" ${room.phase!=="lobby"||logo.ownerId?"disabled":""} class="${logo.ownerId===meId?"active":""}">DVD ${logo.id}<small>${owner?escapeHtml(owner.name):"Unclaimed"}</small></button>`}).join(""); $("derby-logo-select").innerHTML=derby.logos.map((logo)=>`<option value="${logo.id}">DVD ${logo.id}${logo.ownerId===meId?" (yours)":""}</option>`).join(""); $("derby-bet-button").disabled=room.phase!=="derby-betting"; $("derby-shop-button").disabled=room.phase!=="derby-racing"; $("derby-status").textContent=room.phase==="derby-betting"?`${derby.betCount} secret bets locked. Choose one racer.`:room.phase==="derby-racing"?"Race live. Power purchases are announced by effect, not by buyer.":room.phase==="results"?`Winner: DVD ${derby.winnerId}.`:"Claim a logo now, or join later as a spectator."; }
+
     function draw(room) {
       ctx.clearRect(0,0,1000,620); ctx.fillStyle="#061426"; ctx.fillRect(0,0,1000,620); ctx.strokeStyle="rgba(116,220,255,.09)"; for(let x=0;x<1000;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,620);ctx.stroke();} for(let y=0;y<620;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(1000,y);ctx.stroke();}
       if (room.mode === "pong" && room.pong) { const p=room.pong; drawPaddle(p.paddle.top); drawPaddle(p.paddle.bottom); if(p.power)drawPongPower(p.power); if(p.effect?.type==="fire"){ctx.save();ctx.shadowColor="#ff4c22";ctx.shadowBlur=38;ctx.fillStyle="rgba(255,74,26,.66)";roundRect(p.ball.x-8,p.ball.y-8,p.ball.width+16,p.ball.height+16,25);ctx.fill();ctx.restore();} drawLogo(p.ball.x,p.ball.y,p.ball.width,p.ball.height,190); ctx.fillStyle="#eaf7ff";ctx.font="900 34px Arial Black";ctx.textAlign="center";ctx.fillText(`${p.score.top}  :  ${p.score.bottom}`,500,315); if(p.effect) {ctx.font="800 14px Trebuchet MS";ctx.fillStyle="#ffd66e";ctx.fillText(`${p.effect.type.toUpperCase()} ACTIVE`,500,345);} return; }
+      if (room.mode === "derby" && room.derby) { for(const logo of room.derby.logos){const b=logo.ball, effect=logo.effects?.map((entry)=>entry.type).join("+"); if(effect){ctx.save();ctx.shadowColor=effect.includes("turbo")?"#76dcff":effect.includes("grow")?"#83f6b0":"#ffd66e";ctx.shadowBlur=20;ctx.strokeStyle=ctx.shadowColor;ctx.lineWidth=5;roundRect(b.x-4,b.y-4,b.width+8,b.height+8,18);ctx.stroke();ctx.restore();} drawLogo(b.x,b.y,b.width,b.height,b.hue);ctx.fillStyle="#fff";ctx.font="800 12px Trebuchet MS";ctx.textAlign="center";ctx.fillText(String(logo.id),b.x+b.width/2,b.y-8);} return; }
       if ((room.phase === "resolving" || room.phase === "mini-betting") && room.prediction?.ball) { const p=room.prediction, ball=p.ball; if(p.fire){ctx.save();ctx.shadowColor="#ff4c22";ctx.shadowBlur=36;ctx.fillStyle="rgba(255,74,26,.6)";roundRect(ball.x-8,ball.y-8,ball.width+16,ball.height+16,25);ctx.fill();ctx.restore();} drawLogo(ball.x,ball.y,ball.width,ball.height,ball.hue); if(p.mini?.ball)drawLogo(p.mini.ball.x,p.mini.ball.y,p.mini.ball.width,p.mini.ball.height,(p.mini.ball.hue+110)%360); if(p.fire?.players){for(const [id,cube] of Object.entries(p.fire.players)){ctx.fillStyle=id===app.playerId?"#83f6b0":"#ff8bbf";roundRect(cube.x,cube.y,26,26,5);ctx.fill();ctx.fillStyle="#061426";ctx.font="900 8px Arial Black";ctx.textAlign="center";ctx.fillText(id===app.playerId?"YOU":"P",cube.x+13,cube.y+16)}} ctx.fillStyle="#ffd66e";ctx.font="900 42px Consolas";ctx.textAlign="center";ctx.fillText(String(p.bounces),500,315); ctx.fillStyle="#93b6ce";ctx.font="700 16px Trebuchet MS";ctx.fillText(p.hitAt ? "CORNER HIT!" : p.mini?.phase === "active" ? `MINI: ${p.mini.bounces}/10` : "wall bounces",500,342); return; }
       drawLogo(425,260,150,82,196);
     }
@@ -225,12 +246,15 @@
     $("start-button").onclick=()=>send({type:"start-round"});
     $("shop-button").onclick=()=>{app.modal="shop";app.modalSignature="";renderModal();};
     $("modal-close").onclick=()=>{if(app.modal!=="mini"){app.modal=null;app.modalSignature="";renderModal();}};
-    $("modal").onclick=(event)=>{const power=event.target.closest("[data-power]");const number=event.target.closest("[data-mini-number]");if(power){send({type:"buy-power",power:power.dataset.power});return;}if(number){app.miniNumber=Number(number.dataset.miniNumber);app.modalSignature="";renderModal();return;}if(event.target.closest("#mini-bet-button")){send({type:"place-mini-bet",number:app.miniNumber,stake:Number($("mini-stake").value)});return;}if(event.target.closest("#confirm-leave")){app.socket?.close();location.reload();}};
+    $("modal").onclick=(event)=>{const power=event.target.closest("[data-power]");const number=event.target.closest("[data-mini-number]");if(power){if(app.room?.mode==="derby")send({type:"buy-derby-power",power:power.dataset.power,target:Number($("derby-power-target").value)});else send({type:"buy-power",power:power.dataset.power});return;}if(number){app.miniNumber=Number(number.dataset.miniNumber);app.modalSignature="";renderModal();return;}if(event.target.closest("#mini-bet-button")){send({type:"place-mini-bet",number:app.miniNumber,stake:Number($("mini-stake").value)});return;}if(event.target.closest("#confirm-leave")){app.socket?.close();location.reload();}};
     $("fullscreen-button").onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
     $("room-cap").onchange=()=>send({type:"set-room-cap",maxPlayers:$("room-cap").value});
     $("bet-kind").onchange=()=>{$("bet-max").disabled=$("bet-kind").value==="exact";updateBetCap();};
     $("bet-min").oninput=updateBetCap; $("bet-max").oninput=updateBetCap;
     $("bet-button").onclick=()=>send({type:"place-bet",kind:$("bet-kind").value,min:Number($("bet-min").value),max:Number($("bet-max").value),stake:Number($("bet-stake").value)});
+    $("derby-logos").onclick=(event)=>{const claim=event.target.closest("[data-claim-logo]");if(claim)send({type:"claim-derby-logo",logoId:Number(claim.dataset.claimLogo)});};
+    $("derby-bet-button").onclick=()=>send({type:"place-derby-bet",logoId:Number($("derby-logo-select").value),stake:Number($("derby-stake").value)});
+    $("derby-shop-button").onclick=()=>{app.modal="shop";app.modalSignature="";renderModal();};
     document.addEventListener("keydown",(event)=>{if(event.code==="Escape"&&!app.modal){app.modal="quit";app.modalSignature="";renderModal();return;}if(event.code==="Space"&&app.modal==="shop"){event.preventDefault();app.modal=null;app.modalSignature="";renderModal();return;} if(event.code==="KeyR"&&isHost())send({type:"reset-angle"}); if(app.room?.prediction?.fire){const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){event.preventDefault();app.dodge[map[event.code]]=true;send({type:"dodge",...app.dodge});}} if(!app.room||app.room.mode!=="pong")return; let direction=0;if(event.code==="ArrowLeft"||event.code==="KeyA")direction=-1;if(event.code==="ArrowRight"||event.code==="KeyD")direction=1;if(direction){event.preventDefault();if(app.input!==direction){app.input=direction;send({type:"paddle",direction});}}});
     document.addEventListener("keyup",(event)=>{const map={KeyW:"up",KeyA:"left",KeyS:"down",KeyD:"right"};if(map[event.code]){app.dodge[map[event.code]]=false;send({type:"dodge",...app.dodge});}if(["ArrowLeft","ArrowRight","KeyA","KeyD"].includes(event.code)){app.input=0;send({type:"paddle",direction:0});}});
     setInterval(()=>{if(app.room)render();},250); connect();
