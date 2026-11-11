@@ -166,9 +166,14 @@
       // The click is the browser-approved gesture that unlocks the menu music.
       menuMusic.play().catch(()=>{});
       boot.classList.add("boot-leaving");
-      setTimeout(() => { boot.classList.add("hidden"); showScreen("title-screen"); }, 650);
+      setTimeout(() => {
+        boot.classList.add("hidden");
+        showScreen("title-screen");
+        // Let the smaller DVDs establish the scene before the main title joins in.
+        setTimeout(() => { titleBodies.find((body) => body.id === "title-bouncer").active = true; }, 3000);
+      }, 650);
     });
-    const titleBodies=[{id:"title-bouncer",x:80,y:70,vx:245,vy:185,active:true,drag:null},{id:"title-mini-logo-1",x:340,y:265,vx:-205,vy:165,active:true,drag:null},{id:"title-mini-logo-2",x:650,y:120,vx:175,vy:-220,active:true,drag:null},{id:"title-mini-logo-3",x:150,y:480,vx:225,vy:-145,active:true,drag:null},{id:"title-mini-logo-4",x:760,y:410,vx:-175,vy:210,active:true,drag:null},{id:"title-start",x:null,y:null,vx:0,vy:0,active:false,drag:null}];
+    const titleBodies=[{id:"title-bouncer",x:80,y:70,vx:245,vy:185,active:false,drag:null},{id:"title-mini-logo-1",x:340,y:265,vx:-205,vy:165,active:true,drag:null},{id:"title-mini-logo-2",x:650,y:120,vx:175,vy:-220,active:true,drag:null},{id:"title-mini-logo-3",x:150,y:480,vx:225,vy:-145,active:true,drag:null},{id:"title-mini-logo-4",x:760,y:410,vx:-175,vy:210,active:true,drag:null},{id:"title-start",x:null,y:null,vx:0,vy:0,active:false,drag:null}];
     function bodyBounds(body){const stage=$("title-stage"),element=$(body.id);return {w:stage.clientWidth,h:stage.clientHeight,ew:element.offsetWidth,eh:element.offsetHeight};}
     function clampBody(body){const b=bodyBounds(body);body.x=Math.max(0,Math.min(b.w-b.ew,body.x));body.y=Math.max(0,Math.min(b.h-b.eh,body.y));}
     function initializeTitleBodies(){const stage=$("title-stage");for(const body of titleBodies){const b=bodyBounds(body);if(body.x===null)body.x=Math.max(0,(stage.clientWidth-b.ew)/2);if(body.y===null)body.y=Math.max(0,stage.clientHeight-b.eh-64);clampBody(body);}}
