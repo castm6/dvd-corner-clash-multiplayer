@@ -14,6 +14,7 @@ const WIDTH = 1000;
 const HEIGHT = 620;
 const TICK_MS = 1000 / 60;
 const MAX_DISCS = 9999;
+const PONG_SEATS = ["top", "bottom", "left", "right"];
 const PREDICTION_POWERS = {
   mini: { price: 15, cooldown: 15 },
   scramble: { price: 55, cooldown: 150 },
@@ -354,8 +355,10 @@ function disconnect(client) {
   if (player) {
     player.connected = false;
     player.input = 0;
-    if (room.phase === "pong" && player.seat) {
-      finishPong(room, player.seat === "top" ? "bottom" : "top", "Opponent disconnected");
+    if (room.phase === "pong" && player.seat && room.pong) {
+      room.pong.seatIds[player.seat] = null;
+      const remaining = activePongSeats(room, room.pong);
+      if (remaining.length <= 1) finishPong(room, remaining[0], "Opponents disconnected");
     }
   }
 
@@ -378,7 +381,7 @@ function isHost(room, player) {
 
 function takePongSeat(room, player, requestedSeat) {
   if (room.phase !== "lobby") return;
-  const seat = requestedSeat === "top" ? "top" : "bottom";
+  const seat = PONG_SEATS.includes(requestedSeat) ? requestedSeat : "bottom";
   const occupant = [...room.players.values()].find((candidate) => candidate.seat === seat && candidate.id !== player.id);
   if (occupant) {
     sendToPlayer(room, player.id, { type: "error", message: "That seat is already taken." });
@@ -915,34 +918,36 @@ function stepFireDodge(room, deltaSeconds) {
 function startPong(room) {
   if (room.phase !== "lobby") return;
   for (const player of room.players.values()) player.roundWon = 0;
-  const top = [...room.players.values()].find((player) => player.seat === "top" && player.connected);
-  const bottom = [...room.players.values()].find((player) => player.seat === "bottom" && player.connected);
-  if (!top || !bottom) {
-    sendToPlayer(room, room.hostId, { type: "error", message: "Pong needs two players in the top and bottom seats." });
+  const seated = PONG_SEATS.map((seat) => [seat, [...room.players.values()].find((player) => player.seat === seat && player.connected)]);
+  if (seated.filter(([, player]) => player).length < 2) {
+    sendToPlayer(room, room.hostId, { type: "error", message: "Pong needs at least two players in any seats." });
     return;
   }
 
   room.phase = "pong";
   room.pong = {
-    topId: top.id,
-    bottomId: bottom.id,
-    score: { top: 0, bottom: 0 },
+    seatIds: Object.fromEntries(seated.map(([seat, player]) => [seat, player?.id || null])),
+    score: Object.fromEntries(PONG_SEATS.map((seat) => [seat, 0])),
     paddle: {
       top: { x: WIDTH / 2 - 100, y: 36, width: 200, height: 16 },
       bottom: { x: WIDTH / 2 - 100, y: HEIGHT - 52, width: 200, height: 16 },
+      left: { x: 36, y: HEIGHT / 2 - 100, width: 16, height: 200 },
+      right: { x: WIDTH - 52, y: HEIGHT / 2 - 100, width: 16, height: 200 },
     },
-    ball: createPongBall(Math.random() < 0.5 ? 1 : -1),
+    ball: createPongBall(seated.filter(([, player]) => player)[randomInt(0, seated.filter(([, player]) => player).length - 1)][0]),
     lastTick: Date.now(),
     power: null,
     powerTimer: 6,
     effect: null,
+    lastHitSeat: null,
   };
   broadcastState(room);
 }
 
-function createPongBall(verticalDirection) {
+function createPongBall(targetSeat = "top") {
   const speed = 360;
-  const angle = (Math.random() * 0.9 - 0.45) + (verticalDirection > 0 ? Math.PI / 2 : -Math.PI / 2);
+  const base = { top: -Math.PI / 2, bottom: Math.PI / 2, left: Math.PI, right: 0 }[targetSeat] ?? -Math.PI / 2;
+  const angle = base + (Math.random() * 0.9 - 0.45);
   return {
     x: WIDTH / 2,
     y: HEIGHT / 2,
@@ -959,15 +964,20 @@ function createPongBall(verticalDirection) {
 function stepPong(room, deltaSeconds) {
   const pong = room.pong;
   if (!pong) return;
-  const top = room.players.get(pong.topId);
-  const bottom = room.players.get(pong.bottomId);
-  if (!top || !bottom || !top.connected || !bottom.connected) return;
-  for (const [seat, player] of [["top", top], ["bottom", bottom]]) if (player.bot) player.input = clamp((pong.ball.x + pong.ball.width / 2 - (pong.paddle[seat].x + pong.paddle[seat].width / 2)) / 80, -1, 1);
+  const activeSeats = activePongSeats(room, pong);
+  if (activeSeats.length < 2) return;
+  for (const seat of activeSeats) {
+    const player = room.players.get(pong.seatIds[seat]);
+    const paddle = pong.paddle[seat];
+    if (player?.bot) player.input = clamp((seat === "top" || seat === "bottom" ? pong.ball.x + pong.ball.width / 2 - (paddle.x + paddle.width / 2) : pong.ball.y + pong.ball.height / 2 - (paddle.y + paddle.height / 2)) / 80, -1, 1);
+  }
 
   const paddleSpeed = 620;
-  for (const [seat, player] of [["top", top], ["bottom", bottom]]) {
+  for (const seat of activeSeats) {
+    const player = room.players.get(pong.seatIds[seat]);
     const paddle = pong.paddle[seat];
-    paddle.x = clamp(paddle.x + player.input * paddleSpeed * deltaSeconds, 0, WIDTH - paddle.width);
+    if (seat === "top" || seat === "bottom") paddle.x = clamp(paddle.x + player.input * paddleSpeed * deltaSeconds, 0, WIDTH - paddle.width);
+    else paddle.y = clamp(paddle.y + player.input * paddleSpeed * deltaSeconds, 0, HEIGHT - paddle.height);
   }
 
   const ball = pong.ball;
@@ -984,26 +994,30 @@ function stepPong(room, deltaSeconds) {
   ball.x += ball.vx * deltaSeconds;
   ball.y += ball.vy * deltaSeconds;
 
-  if (ball.x <= 0 || ball.x + ball.width >= WIDTH) {
-    ball.x = clamp(ball.x, 0, WIDTH - ball.width);
-    ball.vx *= -1;
-  }
-
-  const topPaddle = pong.paddle.top;
-  const bottomPaddle = pong.paddle.bottom;
-  if (ball.vy < 0 && collides(ball, topPaddle)) {
-    if (pong.effect?.type === "fire") { scorePong(room, "bottom"); return; }
-    hitPaddle(ball, topPaddle, 1);
-  }
-  if (ball.vy > 0 && collides(ball, bottomPaddle)) {
-    if (pong.effect?.type === "fire") { scorePong(room, "top"); return; }
-    hitPaddle(ball, bottomPaddle, -1);
+  for (const [seat, direction] of [["top", 1], ["bottom", -1], ["left", 1], ["right", -1]]) {
+    const movingToward = (seat === "top" && ball.vy < 0) || (seat === "bottom" && ball.vy > 0) || (seat === "left" && ball.vx < 0) || (seat === "right" && ball.vx > 0);
+    if (!movingToward || !activeSeats.includes(seat) || !collides(ball, pong.paddle[seat])) continue;
+    if (pong.effect?.type === "fire") { scorePong(room, choosePongScorer(room, pong, seat), seat); return; }
+    if (seat === "top" || seat === "bottom") hitPaddle(ball, pong.paddle[seat], direction);
+    else hitPaddleVertical(ball, pong.paddle[seat], direction);
+    pong.lastHitSeat = seat;
   }
 
   if (pong.power && Math.hypot(ball.x + ball.width / 2 - pong.power.x, ball.y + ball.height / 2 - pong.power.y) < 52) {
     applyPongPower(pong, pong.power.type);
     pong.power = null;
   }
+
+  if (pong.effect?.type === "fire") {
+    if (ball.x <= 0 || ball.x + ball.width >= WIDTH) { ball.x = clamp(ball.x, 0, WIDTH - ball.width); ball.vx *= -1; }
+    if (ball.y <= 0 || ball.y + ball.height >= HEIGHT) { ball.y = clamp(ball.y, 0, HEIGHT - ball.height); ball.vy *= -1; }
+    return;
+  }
+
+  if (!activeSeats.includes("left") && ball.x <= 0) { ball.x = 0; ball.vx = Math.abs(ball.vx); }
+  if (!activeSeats.includes("right") && ball.x + ball.width >= WIDTH) { ball.x = WIDTH - ball.width; ball.vx = -Math.abs(ball.vx); }
+  if (!activeSeats.includes("top") && ball.y <= 0) { ball.y = 0; ball.vy = Math.abs(ball.vy); }
+  if (!activeSeats.includes("bottom") && ball.y + ball.height >= HEIGHT) { ball.y = HEIGHT - ball.height; ball.vy = -Math.abs(ball.vy); }
 
   const touchingTopCorner = (ball.x <= 1 || ball.x + ball.width >= WIDTH - 1) && ball.y <= 1;
   if (touchingTopCorner && !ball.cornerLatched) {
@@ -1014,13 +1028,15 @@ function stepPong(room, deltaSeconds) {
     ball.cornerLatched = false;
   }
 
-  if (pong.effect?.type === "fire" && (ball.y <= 0 || ball.y + ball.height >= HEIGHT)) {
-    ball.y = clamp(ball.y, 0, HEIGHT - ball.height); ball.vy *= -1;
-  } else {
-    if (ball.y + ball.height < -30) scorePong(room, "bottom");
-    if (ball.y > HEIGHT + 30) scorePong(room, "top");
-  }
+  if (activeSeats.includes("top") && ball.y + ball.height < -30) scorePong(room, choosePongScorer(room, pong, "top"), "top");
+  if (activeSeats.includes("bottom") && ball.y > HEIGHT + 30) scorePong(room, choosePongScorer(room, pong, "bottom"), "bottom");
+  if (activeSeats.includes("left") && ball.x + ball.width < -30) scorePong(room, choosePongScorer(room, pong, "left"), "left");
+  if (activeSeats.includes("right") && ball.x > WIDTH + 30) scorePong(room, choosePongScorer(room, pong, "right"), "right");
 }
+
+function activePongSeats(room, pong) { return PONG_SEATS.filter((seat) => { const player = room.players.get(pong.seatIds[seat]); return player?.connected; }); }
+
+function choosePongScorer(room, pong, missedSeat) { const options = activePongSeats(room, pong).filter((seat) => seat !== missedSeat); return options.includes(pong.lastHitSeat) ? pong.lastHitSeat : options[randomInt(0, options.length - 1)]; }
 
 function clearPongEffect(pong) {
   const effect = pong.effect, ball = pong.ball;
@@ -1060,25 +1076,35 @@ function hitPaddle(ball, paddle, direction) {
   ball.vy = direction * Math.sqrt(Math.max(ball.speed ** 2 - ball.vx ** 2, 170 ** 2));
 }
 
-function scorePong(room, seat) {
+function hitPaddleVertical(ball, paddle, direction) {
+  ball.x = direction > 0 ? paddle.x + paddle.width : paddle.x - ball.width;
+  const ballCenter = ball.y + ball.height / 2;
+  const paddleCenter = paddle.y + paddle.height / 2;
+  const offset = clamp((ballCenter - paddleCenter) / (paddle.height / 2), -0.92, 0.92);
+  ball.speed = Math.min(740, ball.speed + 22);
+  ball.vy = ball.speed * offset;
+  ball.vx = direction * Math.sqrt(Math.max(ball.speed ** 2 - ball.vy ** 2, 170 ** 2));
+}
+
+function scorePong(room, seat, serveAtSeat = null) {
   const pong = room.pong;
+  if (!seat) return;
   pong.score[seat] += 1;
   if (pong.score[seat] >= 5) {
     finishPong(room, seat, "First to five");
     return;
   }
   pong.effect = null;
-  pong.ball = createPongBall(seat === "top" ? 1 : -1);
+  pong.ball = createPongBall(serveAtSeat || seat);
+  pong.lastHitSeat = null;
 }
 
 function finishPong(room, winnerSeat, reason) {
   if (room.phase !== "pong") return;
-  const winnerId = winnerSeat === "top" ? room.pong?.topId : room.pong?.bottomId;
-  const loserId = winnerSeat === "top" ? room.pong?.bottomId : room.pong?.topId;
+  const winnerId = room.pong?.seatIds[winnerSeat];
   const winner = room.players.get(winnerId);
-  const loser = room.players.get(loserId);
   if (winner) winner.discs = Math.min(MAX_DISCS, winner.discs + 25);
-  if (loser) loser.discs = Math.min(MAX_DISCS, loser.discs + 5);
+  for (const seat of PONG_SEATS) { const player = room.players.get(room.pong?.seatIds[seat]); if (player && player.id !== winnerId) player.discs = Math.min(MAX_DISCS, player.discs + 5); }
 
   room.phase = "results";
   room.pong.result = { winnerId, winnerName: winner?.name || "Winner", reason };
@@ -1173,6 +1199,7 @@ function publicState(room) {
       },
       pong: room.pong && {
         score: room.pong.score,
+        seatIds: room.pong.seatIds,
         paddle: room.pong.paddle,
         ball: room.pong.ball,
         power: room.pong.power,
