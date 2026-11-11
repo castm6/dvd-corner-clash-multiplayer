@@ -162,6 +162,7 @@ function createRoom(requestedCode, isPublic, solo) {
     mode: "prediction",
     predictionStyle: "chance",
     derbyStyle: "chance",
+    soloPongSize: 2,
     maxPlayers: 20,
     prediction: null,
     pong: null,
@@ -259,6 +260,13 @@ function handleMessage(client, message) {
   if (message.type === "set-room-cap") {
     if (!isHost(room, player) || room.phase !== "lobby") return;
     room.maxPlayers = message.maxPlayers === "unlimited" ? null : 20;
+    broadcastState(room);
+    return;
+  }
+
+  if (message.type === "set-solo-pong-size") {
+    if (!isHost(room, player) || !room.solo || room.phase !== "lobby") return;
+    room.soloPongSize = message.size === 4 ? 4 : 2;
     broadcastState(room);
     return;
   }
@@ -392,6 +400,37 @@ function takePongSeat(room, player, requestedSeat) {
     if (candidate.id === player.id) candidate.seat = seat;
   }
   broadcastState(room);
+}
+
+function oppositePongSeat(seat) { return ({ top: "bottom", bottom: "top", left: "right", right: "left" })[seat]; }
+
+function clearTemporaryPongBots(room) {
+  for (const [id, player] of room.players) if (player.temporaryPongBot) room.players.delete(id);
+}
+
+function prepareSoloPong(room) {
+  const human = [...room.players.values()].find((player) => !player.bot && player.connected);
+  if (!human) return [];
+  if (!PONG_SEATS.includes(human.seat)) human.seat = "bottom";
+  const bots = [...room.players.values()].filter((player) => player.bot);
+  for (const bot of bots) bot.seat = null;
+  const seats = room.soloPongSize === 4 ? PONG_SEATS : [human.seat, oppositePongSeat(human.seat)];
+  let index = 0;
+  for (const seat of seats) if (seat !== human.seat && bots[index]) { bots[index].seat = seat; index += 1; }
+  return seats;
+}
+
+function preparePongLineup(room) {
+  clearTemporaryPongBots(room);
+  if (room.solo) return prepareSoloPong(room);
+  let seats = PONG_SEATS.filter((seat) => [...room.players.values()].some((player) => player.connected && player.seat === seat));
+  if (seats.length === 3) {
+    const bot = makePlayer("CPU Fill");
+    bot.bot = true; bot.temporaryPongBot = true; bot.seat = PONG_SEATS.find((seat) => !seats.includes(seat));
+    room.players.set(bot.id, bot);
+    seats = PONG_SEATS;
+  }
+  return seats;
 }
 
 function createDerby(style = "chance") {
@@ -918,11 +957,16 @@ function stepFireDodge(room, deltaSeconds) {
 function startPong(room) {
   if (room.phase !== "lobby") return;
   for (const player of room.players.values()) player.roundWon = 0;
-  const seated = PONG_SEATS.map((seat) => [seat, [...room.players.values()].find((player) => player.seat === seat && player.connected)]);
-  if (seated.filter(([, player]) => player).length < 2) {
+  const requestedSeats = preparePongLineup(room);
+  if (requestedSeats.length < 2) {
     sendToPlayer(room, room.hostId, { type: "error", message: "Pong needs at least two players in any seats." });
     return;
   }
+  if (requestedSeats.length === 2 && oppositePongSeat(requestedSeats[0]) !== requestedSeats[1]) {
+    sendToPlayer(room, room.hostId, { type: "error", message: "Two-player Pong needs opposite seats: top/bottom or left/right." });
+    return;
+  }
+  const seated = PONG_SEATS.map((seat) => [seat, [...room.players.values()].find((player) => player.seat === seat && player.connected)]);
 
   room.phase = "pong";
   room.pong = {
@@ -934,7 +978,7 @@ function startPong(room) {
       left: { x: 36, y: HEIGHT / 2 - 100, width: 16, height: 200 },
       right: { x: WIDTH - 52, y: HEIGHT / 2 - 100, width: 16, height: 200 },
     },
-    ball: createPongBall(seated.filter(([, player]) => player)[randomInt(0, seated.filter(([, player]) => player).length - 1)][0]),
+    ball: createPongBall(requestedSeats[randomInt(0, requestedSeats.length - 1)]),
     lastTick: Date.now(),
     power: null,
     powerTimer: 6,
@@ -1122,6 +1166,7 @@ function resetToLobby(room) {
   room.phase = "lobby";
   room.prediction = null;
   room.pong = null;
+  clearTemporaryPongBots(room);
   if (room.mode === "derby") room.derby = createDerby(room.derbyStyle);
   for (const player of room.players.values()) player.input = 0;
   broadcastState(room);
@@ -1158,6 +1203,8 @@ function publicState(room) {
       mode: room.mode,
       predictionStyle: room.predictionStyle,
       derbyStyle: room.derbyStyle,
+      solo: room.solo,
+      soloPongSize: room.soloPongSize,
       maxPlayers: room.maxPlayers,
       fireDodgeEnabled: room.maxPlayers !== null,
       hostId: room.hostId,

@@ -106,6 +106,7 @@
             <p class="eyebrow">Pong Seats</p>
             <p class="info">Top: A / D. Bottom: Left / Right. Left: W / S. Right: I / K. First to 5 wins 25 discs; every other player gets 5.</p>
             <div class="seat-buttons"><button data-seat="top">Take Top</button><button data-seat="bottom">Take Bottom</button><button data-seat="left">Take Left</button><button data-seat="right">Take Right</button></div>
+            <label id="solo-pong-size-wrap" class="hidden" style="margin-top:12px">Solo Pong players<select id="solo-pong-size"><option value="2">2 players - you vs CPU</option><option value="4">4 players - you vs 3 CPUs</option></select></label>
           </section>
           <section id="derby-panel" class="panel hidden">
             <p id="derby-heading" class="eyebrow">500 Corner Derby</p>
@@ -205,11 +206,14 @@
       $("prediction-panel").classList.toggle("hidden", room.mode !== "prediction");
       $("pong-panel").classList.toggle("hidden", room.mode !== "pong");
       $("derby-panel").classList.toggle("hidden", room.mode !== "derby");
+      $("solo-pong-size-wrap").classList.toggle("hidden", !(room.mode === "pong" && room.solo));
+      $("solo-pong-size").disabled = !isHost() || room.phase !== "lobby";
+      $("solo-pong-size").value = String(room.soloPongSize || 2);
       $("start-button").disabled = !isHost() || room.phase !== "lobby";
       $("room-cap").disabled = !isHost() || room.phase !== "lobby";
       $("room-cap").value = room.maxPlayers === null ? "unlimited" : "20";
       $("start-button").textContent = room.mode === "pong" ? "Start Pong Match" : room.mode === "derby" ? "Open Derby Betting" : "Open Betting";
-      $("host-help").textContent = isHost() ? (room.mode === "pong" ? "At least two seated players are required. Empty edges stay solid." : room.mode === "derby" ? room.phase === "derby-racing" ? "Press R to scramble every racer's angle without resetting bounce counts." : "Players can claim a racer now. Open betting whenever you are ready." : room.maxPlayers === null ? "Unlimited room: Fire Dodge is disabled." : "20-player room: Fire Dodge will be available.") : "Only the room host can start.";
+      $("host-help").textContent = isHost() ? (room.mode === "pong" ? room.solo ? "Choose a 2-player or 4-player CPU lineup, then start." : "Two players must be opposite. A three-player game gets one CPU fill." : room.mode === "derby" ? room.phase === "derby-racing" ? "Press R to scramble every racer's angle without resetting bounce counts." : "Players can claim a racer now. Open betting whenever you are ready." : room.maxPlayers === null ? "Unlimited room: Fire Dodge is disabled." : "20-player room: Fire Dodge will be available.") : "Only the room host can start.";
       $("players").innerHTML = room.players.map((entry) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>${escapeHtml(entry.name)} ${entry.id === room.hostId ? "(host)" : ""}<small class="seat">${entry.seat || "spectator"}</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
       $("leaderboard").innerHTML = [...room.players].sort((a,b)=>b.discs-a.discs || b.roundWon-a.roundWon).map((entry,index) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>#${index+1} ${escapeHtml(entry.name)}<small class="seat">+${entry.roundWon || 0} this round</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
       $("derby-heading").textContent = derby?.style === "normal" ? "Normal Corner Derby" : "500 Corner Derby";
@@ -298,6 +302,7 @@
     $("modal").onclick=(event)=>{const power=event.target.closest("[data-power]");const number=event.target.closest("[data-mini-number]");if(power){if(app.room?.mode==="derby")send({type:"buy-derby-power",power:power.dataset.power,target:Number($("derby-power-target").value)});else send({type:"buy-power",power:power.dataset.power});return;}if(number){app.miniNumber=Number(number.dataset.miniNumber);app.modalSignature="";renderModal();return;}if(event.target.closest("#mini-bet-button")){send({type:"place-mini-bet",number:app.miniNumber,stake:Number($("mini-stake").value)});return;}if(event.target.closest("#confirm-leave")){app.socket?.close();location.reload();}};
     $("fullscreen-button").onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
     $("room-cap").onchange=()=>send({type:"set-room-cap",maxPlayers:$("room-cap").value});
+    $("solo-pong-size").onchange=()=>send({type:"set-solo-pong-size",size:Number($("solo-pong-size").value)});
     $("bet-kind").onchange=()=>{$("bet-max").disabled=$("bet-kind").value==="exact";updateBetCap();};
     $("bet-min").oninput=updateBetCap; $("bet-max").oninput=updateBetCap;
     $("bet-button").onclick=()=>send({type:"place-bet",kind:$("bet-kind").value,min:Number($("bet-min").value),max:Number($("bet-max").value),stake:Number($("bet-stake").value)});
