@@ -66,7 +66,8 @@
               <button data-mode="prediction" data-style="normal" id="prediction-normal-mode">Normal Corner Call<small>Watch the real DVD bounce path and call the bounce where its next corner lands.</small></button>
               <button data-mode="prediction" data-style="chance" id="prediction-chance-mode">500 Bounce Chance<small>Same real bounce path, with the next corner guaranteed by bounce 500.</small></button>
               <button data-mode="pong" id="pong-mode">2 Player Pong<small>Two people play. Everyone else watches.</small></button>
-              <button data-mode="derby" id="derby-mode">500 Corner Derby<small>Ten DVD racers. Back the first logo to hit a corner.</small></button>
+              <button data-mode="derby" data-derby-style="normal" id="derby-normal-mode">Normal Corner Derby<small>Ten unforced DVD racers. Back the first natural corner hit.</small></button>
+              <button data-mode="derby" data-derby-style="chance" id="derby-chance-mode">500 Corner Derby<small>Ten DVD racers. Every route is guaranteed to corner-hit by bounce 500.</small></button>
             </div>
           </section>
           <section class="panel">
@@ -107,8 +108,8 @@
             <div class="seat-buttons"><button data-seat="top">Take Top</button><button data-seat="bottom">Take Bottom</button></div>
           </section>
           <section id="derby-panel" class="panel hidden">
-            <p class="eyebrow">500 Corner Derby</p>
-            <p class="info">Claim one racer in the lobby, then back exactly one logo. Stakes stay hidden until the winner is revealed.</p>
+            <p id="derby-heading" class="eyebrow">500 Corner Derby</p>
+            <p id="derby-info" class="info">Claim one racer in the lobby, then back exactly one logo. Stakes stay hidden until the winner is revealed.</p>
             <div id="derby-logos" class="logo-grid"></div>
             <label>Back racer<select id="derby-logo-select"></select></label>
             <label style="margin-top:10px">Stake in discs<input id="derby-stake" type="number" min="1" value="10"></label>
@@ -190,6 +191,8 @@
     function render() {
       const room = app.room; if (!room) return;
       const player = me();
+      const prediction = room.prediction;
+      const derby = room.derby;
       $("room-code").textContent = room.code;
       $("phase-label").textContent = room.phase.toUpperCase();
       $("my-discs").textContent = `${player?.discs ?? 0} discs`;
@@ -197,7 +200,8 @@
       $("prediction-normal-mode").classList.toggle("active", room.mode === "prediction" && room.predictionStyle === "normal");
       $("prediction-chance-mode").classList.toggle("active", room.mode === "prediction" && room.predictionStyle === "chance");
       $("pong-mode").classList.toggle("active", room.mode === "pong");
-      $("derby-mode").classList.toggle("active", room.mode === "derby");
+      $("derby-normal-mode").classList.toggle("active", room.mode === "derby" && derby?.style === "normal");
+      $("derby-chance-mode").classList.toggle("active", room.mode === "derby" && derby?.style === "chance");
       $("prediction-panel").classList.toggle("hidden", room.mode !== "prediction");
       $("pong-panel").classList.toggle("hidden", room.mode !== "pong");
       $("derby-panel").classList.toggle("hidden", room.mode !== "derby");
@@ -208,8 +212,8 @@
       $("host-help").textContent = isHost() ? (room.mode === "pong" ? "Two seated players are required." : room.mode === "derby" ? room.phase === "derby-racing" ? "Press R to scramble every racer's angle without resetting bounce counts." : "Players can claim a racer now. Open betting whenever you are ready." : room.maxPlayers === null ? "Unlimited room: Fire Dodge is disabled." : "20-player room: Fire Dodge will be available.") : "Only the room host can start.";
       $("players").innerHTML = room.players.map((entry) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>${escapeHtml(entry.name)} ${entry.id === room.hostId ? "(host)" : ""}<small class="seat">${entry.seat || "spectator"}</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
       $("leaderboard").innerHTML = [...room.players].sort((a,b)=>b.discs-a.discs || b.roundWon-a.roundWon).map((entry,index) => `<div class="player ${entry.id === app.playerId ? "you" : ""}"><span>#${index+1} ${escapeHtml(entry.name)}<small class="seat">+${entry.roundWon || 0} this round</small></span><strong class="disc">${entry.discs}</strong></div>`).join("");
-      const prediction = room.prediction;
-      const derby = room.derby;
+      $("derby-heading").textContent = derby?.style === "normal" ? "Normal Corner Derby" : "500 Corner Derby";
+      $("derby-info").textContent = derby?.style === "normal" ? "Claim one racer in the lobby, then back exactly one logo. The routes are unforced, so the first natural corner hit wins." : "Claim one racer in the lobby, then back exactly one logo. Stakes stay hidden until the winner is revealed.";
       $("pot-chip").innerHTML = `Pot: <strong>${room.mode === "derby" ? derby?.pot || 0 : prediction?.pot || 0} discs</strong>`;
       $("bet-board").innerHTML = prediction?.bets?.length ? prediction.bets.map((bet)=>`<div class="player"><span>${escapeHtml(bet.playerName)}<small class="seat">${bet.kind === "exact" ? `exact ${bet.min}` : `${bet.min}-${bet.max}`}</small></span><strong class="disc">${bet.stake}</strong></div>`).join("") : `<p class="info">No bets yet. Be the first call.</p>`;
       $("bet-button").disabled = room.phase !== "betting";
@@ -219,7 +223,7 @@
       $("main-chip").textContent = room.mode === "derby" ? (room.phase === "derby-betting" ? `Derby bets close in ${Math.max(0,Math.ceil((derby.closesAt-Date.now())/1000))}s` : room.phase === "derby-countdown" ? `Race begins in ${Math.max(0,Math.ceil((derby.countdownEndsAt-Date.now())/1000))}` : room.phase === "derby-racing" ? `10 logos racing · ${derby.betCount} secret bets` : "Claim a racer or watch the Derby") : room.phase === "betting" ? `Betting closes in ${Math.max(0, Math.ceil((prediction.closesAt - Date.now()) / 1000))}s` : room.phase === "countdown" ? `Round begins in ${Math.max(0,Math.ceil((prediction.countdownEndsAt-Date.now())/1000))}` : room.phase === "mini-betting" ? `Mini bets close in ${Math.max(0, Math.ceil((prediction.mini.closesAt - Date.now()) / 1000))}s` : room.phase === "resolving" ? `${prediction.fire?.phase === "countdown" ? `Fire Dodge: ${Math.max(1,Math.ceil(prediction.fire.countdown))}` : `Bounces: ${prediction.bounces}${effects ? ` | ${effects}` : ""}`}` : room.mode === "pong" ? "Live 2 player arena" : "Prediction pool lobby";
       const title = $("arena-title"), copy = $("arena-copy"), card = $("arena-card");
       if (room.phase === "results") { card.classList.remove("hidden"); renderResult(room, title, copy); }
-      else if (room.phase === "lobby") { card.classList.remove("hidden"); title.textContent = room.mode === "pong" ? "Two paddles. One ridiculous logo." : room.mode === "derby" ? "Claim a DVD racer." : "Call the corner."; copy.textContent = room.mode === "pong" ? "Take a top or bottom seat. Spectators can watch every rally." : room.mode === "derby" ? "The first ten players can own a racer. When bets lock, all ten logos race to a guaranteed corner hit within 500 bounces." : room.predictionStyle === "chance" ? "A real DVD route will bounce around the walls and must corner-hit by bounce 500. Bet the number or a range." : "A real DVD route will bounce around the walls. Bet the number or range where its next corner hit lands."; }
+      else if (room.phase === "lobby") { card.classList.remove("hidden"); title.textContent = room.mode === "pong" ? "Two paddles. One ridiculous logo." : room.mode === "derby" ? "Claim a DVD racer." : "Call the corner."; copy.textContent = room.mode === "pong" ? "Take a top or bottom seat. Spectators can watch every rally." : room.mode === "derby" ? derby?.style === "normal" ? "The first ten players can own a racer. When bets lock, all ten unforced logos race until one naturally reaches a corner." : "The first ten players can own a racer. When bets lock, all ten logos race to a guaranteed corner hit within 500 bounces." : room.predictionStyle === "chance" ? "A real DVD route will bounce around the walls and must corner-hit by bounce 500. Bet the number or a range." : "A real DVD route will bounce around the walls. Bet the number or range where its next corner hit lands."; }
       else { card.classList.add("hidden"); }
       if (room.phase === "mini-betting" && app.modal !== "mini") { app.modal = "mini"; app.modalSignature = ""; }
       renderModal();
@@ -286,7 +290,7 @@
     $("solo-button").onclick=startSolo; $("multiplayer-button").onclick=()=>showScreen("landing");
     $("create-button").onclick=()=>enter("create"); $("join-button").onclick=()=>enter("join");
     $("public-rooms").onclick=(event)=>{const room=event.target.closest("[data-public-room]");if(room){$("room-input").value=room.dataset.publicRoom;enter("join");}};
-    document.querySelectorAll("[data-mode]").forEach((button)=>button.onclick=()=>send({type:"set-mode",mode:button.dataset.mode,predictionStyle:button.dataset.style}));
+    document.querySelectorAll("[data-mode]").forEach((button)=>button.onclick=()=>send({type:"set-mode",mode:button.dataset.mode,predictionStyle:button.dataset.style,derbyStyle:button.dataset.derbyStyle}));
     document.querySelectorAll("[data-seat]").forEach((button)=>button.onclick=()=>send({type:"take-seat",seat:button.dataset.seat}));
     $("start-button").onclick=()=>send({type:"start-round"});
     $("shop-button").onclick=()=>{app.modal="shop";app.modalSignature="";renderModal();};

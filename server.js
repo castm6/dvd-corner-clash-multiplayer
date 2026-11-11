@@ -160,6 +160,7 @@ function createRoom(requestedCode, isPublic, solo) {
     phase: "lobby",
     mode: "prediction",
     predictionStyle: "chance",
+    derbyStyle: "chance",
     maxPlayers: 20,
     prediction: null,
     pong: null,
@@ -244,7 +245,8 @@ function handleMessage(client, message) {
   if (message.type === "set-mode") {
     if (!isHost(room, player) || room.phase !== "lobby") return;
     room.mode = message.mode === "pong" ? "pong" : message.mode === "derby" ? "derby" : "prediction";
-    if (room.mode === "derby") room.derby = createDerby();
+    if (message.derbyStyle === "normal" || message.derbyStyle === "chance") room.derbyStyle = message.derbyStyle;
+    if (room.mode === "derby") room.derby = createDerby(room.derbyStyle);
     else room.derby = null;
     if (message.predictionStyle === "normal" || message.predictionStyle === "chance") {
       room.predictionStyle = message.predictionStyle;
@@ -389,9 +391,10 @@ function takePongSeat(room, player, requestedSeat) {
   broadcastState(room);
 }
 
-function createDerby() {
+function createDerby(style = "chance") {
   return {
-    logos: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, ownerId: null, effects: [], ball: createDerbyBall(index), bounces: 0, target: randomInt(35, 500), aimedForCorner: false })),
+    style,
+    logos: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, ownerId: null, effects: [], ball: createDerbyBall(index), bounces: 0, target: style === "chance" ? randomInt(35, 500) : null, aimedForCorner: false })),
     bets: [], pot: 0, cooldowns: {}, closesAt: null, lastTick: null, winnerId: null,
   };
 }
@@ -418,7 +421,7 @@ function startDerbyBetting(room) {
   for (const player of room.players.values()) player.roundWon = 0;
   const derby = room.derby;
   derby.bets = []; derby.pot = 0; derby.winnerId = null; derby.closesAt = Date.now() + 22000;
-  derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = randomInt(35, 500); logo.effects = []; logo.aimedForCorner = false; });
+  derby.logos.forEach((logo, index) => { logo.ball = createDerbyBall(index); logo.bounces = 0; logo.target = derby.style === "chance" ? randomInt(35, 500) : null; logo.effects = []; logo.aimedForCorner = false; });
   room.phase = "derby-betting";
   derby.bettingTimer = setTimeout(() => beginDerbyCountdown(room), 22000);
   broadcastState(room);
@@ -466,7 +469,7 @@ function resetDerbyAngles(derby) {
     logo.ball.vx = Math.cos(angle) * speed;
     logo.ball.vy = Math.sin(angle) * speed;
     logo.aimedForCorner = false;
-    logo.target = Math.max(logo.bounces + 1, logo.target);
+    if (derby.style === "chance") logo.target = Math.max(logo.bounces + 1, logo.target);
   }
 }
 
@@ -499,7 +502,7 @@ function stepDerby(room, deltaSeconds) {
   const derby = room.derby; if (!derby || derby.winnerId) return;
   for (const logo of derby.logos) {
     applyDerbyEffects(logo);
-    if (logo.bounces === logo.target - 1 && !logo.aimedForCorner) { aimPredictionAtCorner(logo.ball); logo.aimedForCorner = true; }
+    if (derby.style === "chance" && logo.bounces === logo.target - 1 && !logo.aimedForCorner) { aimPredictionAtCorner(logo.ball); logo.aimedForCorner = true; }
     let cornered = false;
     stepMovingBall(logo.ball, deltaSeconds, (both) => { logo.bounces += 1; if (both) { cornered = true; return true; } return false; });
     if (cornered) { finishDerby(room, logo.id); return; }
@@ -1093,7 +1096,7 @@ function resetToLobby(room) {
   room.phase = "lobby";
   room.prediction = null;
   room.pong = null;
-  if (room.mode === "derby") room.derby = createDerby();
+  if (room.mode === "derby") room.derby = createDerby(room.derbyStyle);
   for (const player of room.players.values()) player.input = 0;
   broadcastState(room);
 }
@@ -1128,6 +1131,7 @@ function publicState(room) {
       phase: room.phase,
       mode: room.mode,
       predictionStyle: room.predictionStyle,
+      derbyStyle: room.derbyStyle,
       maxPlayers: room.maxPlayers,
       fireDodgeEnabled: room.maxPlayers !== null,
       hostId: room.hostId,
@@ -1176,6 +1180,7 @@ function publicState(room) {
         result: room.pong.result || null,
       },
       derby: room.derby && {
+        style: room.derby.style,
         closesAt: room.derby.closesAt,
         countdownEndsAt: room.derby.countdownEndsAt,
         pot: room.derby.pot,
