@@ -583,7 +583,7 @@ function finishDerby(room, winnerId) {
 }
 
 function createDefenseBall(index = 0) {
-  const ball = { x: randomInt(90, WIDTH - 190), y: randomInt(90, HEIGHT - 130), width: 118, height: 65, vx: 0, vy: 0, hue: (index * 57 + randomInt(0, 30)) % 360 };
+  const ball = { x: randomInt(90, WIDTH - 190), y: randomInt(90, HEIGHT - 130), width: 118, height: 65, vx: 95, vy: 0, hue: (index * 57 + randomInt(0, 30)) % 360 };
   aimPredictionAtCorner(ball);
   return ball;
 }
@@ -665,6 +665,7 @@ function updateDefenseCursor(room, player, payload) {
 
 function stepCornerDefense(room, deltaSeconds) {
   const defense = room.defense; if (!defense || defense.winnerId) return;
+  stepDefenseBots(room, defense);
   for (const entry of defense.defenders) {
     let cornered = false;
     stepMovingBall(entry.ball, deltaSeconds, (both) => { if (both) { cornered = true; return true; } return false; });
@@ -672,6 +673,28 @@ function stepCornerDefense(room, deltaSeconds) {
     entry.score += 1;
     if (entry.score >= DEFENSE_WIN_SCORE) { finishCornerDefense(room, entry.playerId); return; }
     entry.ball = createDefenseBall(defense.defenders.indexOf(entry));
+  }
+}
+
+function stepDefenseBots(room, defense) {
+  const now = Date.now();
+  for (const entry of defense.defenders) {
+    const player = room.players.get(entry.playerId);
+    if (!player?.bot) continue;
+    let target = defense.defenders.find((candidate) => candidate.playerId === entry.botTargetId);
+    if (!target || target.playerId === entry.playerId) {
+      const choices = defense.defenders.filter((candidate) => candidate.playerId !== entry.playerId);
+      target = choices[randomInt(0, choices.length - 1)];
+      entry.botTargetId = target?.playerId || null;
+    }
+    if (!target) continue;
+    entry.cursor = { x: target.ball.x + target.ball.width / 2, y: target.ball.y + target.ball.height / 2 };
+    if ((entry.nextBotDragAt || 0) > now) continue;
+    target.ball.x = randomInt(150, WIDTH - target.ball.width - 150);
+    target.ball.y = randomInt(120, HEIGHT - target.ball.height - 120);
+    aimPredictionAtCorner(target.ball);
+    entry.nextBotDragAt = now + randomInt(1150, 1900);
+    entry.botTargetId = null;
   }
 }
 
