@@ -15,6 +15,8 @@ const HEIGHT = 620;
 const TICK_MS = 1000 / 60;
 const MAX_DISCS = 9999;
 const PONG_SEATS = ["top", "bottom", "left", "right"];
+const DEFENSE_MAX_PLAYERS = 6;
+const DEFENSE_WIN_SCORE = 5;
 const PREDICTION_POWERS = {
   mini: { price: 15, cooldown: 15 },
   scramble: { price: 55, cooldown: 150 },
@@ -163,10 +165,12 @@ function createRoom(requestedCode, isPublic, solo) {
     predictionStyle: "chance",
     derbyStyle: "chance",
     soloPongSize: 2,
+    pongTarget: 11,
     maxPlayers: 20,
     prediction: null,
     pong: null,
     derby: null,
+    defense: null,
   };
   rooms.set(code, room);
   return room;
@@ -246,10 +250,11 @@ function handleMessage(client, message) {
 
   if (message.type === "set-mode") {
     if (!isHost(room, player) || room.phase !== "lobby") return;
-    room.mode = message.mode === "pong" ? "pong" : message.mode === "derby" ? "derby" : "prediction";
+    room.mode = message.mode === "pong" ? "pong" : message.mode === "derby" ? "derby" : message.mode === "defense" ? "defense" : "prediction";
     if (message.derbyStyle === "normal" || message.derbyStyle === "chance") room.derbyStyle = message.derbyStyle;
     if (room.mode === "derby") room.derby = createDerby(room.derbyStyle);
     else room.derby = null;
+    room.defense = room.mode === "defense" ? createCornerDefense() : null;
     if (message.predictionStyle === "normal" || message.predictionStyle === "chance") {
       room.predictionStyle = message.predictionStyle;
     }
@@ -271,10 +276,22 @@ function handleMessage(client, message) {
     return;
   }
 
+  if (message.type === "set-pong-target") {
+    if (!isHost(room, player) || room.phase !== "lobby") return;
+    room.pongTarget = message.target === "infinite" ? "infinite" : 11;
+    broadcastState(room);
+    return;
+  }
+
   if (message.type === "take-seat") {
     takePongSeat(room, player, message.seat);
     return;
   }
+
+  if (message.type === "claim-defense") { claimDefenseSpot(room, player); return; }
+  if (message.type === "place-defense-bet") { placeDefenseBet(room, player, message); return; }
+  if (message.type === "defense-drag") { dragDefenseLogo(room, player, message); return; }
+  if (message.type === "defense-cursor") { updateDefenseCursor(room, player, message); return; }
 
   if (message.type === "paddle") {
     if (room.phase === "pong" && player.seat && Number.isFinite(message.direction)) {
@@ -326,6 +343,7 @@ function handleMessage(client, message) {
     if (!isHost(room, player)) return;
     if (room.mode === "pong") startPong(room);
     else if (room.mode === "derby") startDerbyBetting(room);
+    else if (room.mode === "defense") startDefenseBetting(room);
     else startPredictionBetting(room);
     return;
   }
@@ -562,6 +580,109 @@ function finishDerby(room, winnerId) {
   for (const bet of winningBets) { const player = room.players.get(bet.playerId); if (!player) continue; const payout = totalStake ? Math.floor(distributable * bet.stake / totalStake) : 0; player.discs = Math.min(MAX_DISCS, player.discs + payout); player.roundWon += payout; bet.payout = payout; }
   room.phase = "results"; derby.winningBets = winningBets; broadcastState(room);
   derby.resultsTimer = setTimeout(() => resetToLobby(room), 9000);
+}
+
+function createDefenseBall(index = 0) {
+  const ball = { x: randomInt(90, WIDTH - 190), y: randomInt(90, HEIGHT - 130), width: 118, height: 65, vx: 0, vy: 0, hue: (index * 57 + randomInt(0, 30)) % 360 };
+  aimPredictionAtCorner(ball);
+  return ball;
+}
+
+function createCornerDefense() { return { defenders: [], bets: [], pot: 0, closesAt: null, lastTick: null, winnerId: null }; }
+
+function claimDefenseSpot(room, player) {
+  const defense = room.defense;
+  if (room.mode !== "defense" || room.phase !== "lobby" || !defense) return;
+  if (defense.defenders.some((entry) => entry.playerId === player.id)) { sendToPlayer(room, player.id, { type: "error", message: "You already control a DVD in Corner Defense." }); return; }
+  if (defense.defenders.length >= DEFENSE_MAX_PLAYERS) { sendToPlayer(room, player.id, { type: "error", message: "All six Corner Defense slots are taken. You can still spectate and bet." }); return; }
+  defense.defenders.push({ playerId: player.id, score: 0, ball: createDefenseBall(defense.defenders.length), cursor: null });
+  broadcastState(room);
+}
+
+function prepareSoloDefense(room) {
+  const defense = room.defense;
+  if (!room.solo || !defense) return;
+  const available = [...room.players.values()].filter((player) => player.connected).slice(0, DEFENSE_MAX_PLAYERS);
+  for (const player of available) if (!defense.defenders.some((entry) => entry.playerId === player.id)) defense.defenders.push({ playerId: player.id, score: 0, ball: createDefenseBall(defense.defenders.length), cursor: null });
+}
+
+function startDefenseBetting(room) {
+  if (room.phase !== "lobby" || !room.defense) return;
+  prepareSoloDefense(room);
+  const defense = room.defense;
+  if (defense.defenders.length < 2) { sendToPlayer(room, room.hostId, { type: "error", message: "Corner Defense needs at least two claimed DVD logos." }); return; }
+  for (const player of room.players.values()) player.roundWon = 0;
+  defense.bets = []; defense.pot = 0; defense.winnerId = null; defense.closesAt = Date.now() + 20000;
+  defense.defenders.forEach((entry, index) => { entry.score = 0; entry.ball = createDefenseBall(index); entry.cursor = null; });
+  room.phase = "defense-betting";
+  defense.bettingTimer = setTimeout(() => beginCornerDefense(room), 20000);
+  broadcastState(room);
+  if (room.solo) setTimeout(() => autoDefenseBets(room), 400);
+}
+
+function autoDefenseBets(room) {
+  const defense = room.defense;
+  if (room.phase !== "defense-betting" || !defense) return;
+  for (const player of room.players.values()) {
+    if (!player.bot || defense.defenders.some((entry) => entry.playerId === player.id) || defense.bets.some((bet) => bet.playerId === player.id)) continue;
+    const stake = Math.min(player.discs, randomInt(4, 12)), target = defense.defenders[randomInt(0, defense.defenders.length - 1)];
+    player.discs -= stake; defense.pot += stake; defense.bets.push({ playerId: player.id, playerName: player.name, targetId: target.playerId, stake });
+  }
+  broadcastState(room);
+}
+
+function placeDefenseBet(room, player, payload) {
+  const defense = room.defense, targetId = String(payload.targetId || ""), stake = Math.floor(Number(payload.stake));
+  if (room.phase !== "defense-betting" || !defense) return;
+  if (defense.defenders.some((entry) => entry.playerId === player.id)) { sendToPlayer(room, player.id, { type: "error", message: "Defenders cannot bet on their own Corner Defense match." }); return; }
+  if (!defense.defenders.some((entry) => entry.playerId === targetId) || !Number.isInteger(stake) || stake < 1 || stake > player.discs) { sendToPlayer(room, player.id, { type: "error", message: "Choose a defender and a stake you can afford." }); return; }
+  if (defense.bets.some((bet) => bet.playerId === player.id)) { sendToPlayer(room, player.id, { type: "error", message: "You already placed a Corner Defense bet." }); return; }
+  player.discs -= stake; defense.pot += stake; defense.bets.push({ playerId: player.id, playerName: player.name, targetId, stake });
+  broadcastState(room);
+}
+
+function beginCornerDefense(room) {
+  if (room.phase !== "defense-betting" || !room.defense) return;
+  room.phase = "corner-defense"; room.defense.lastTick = Date.now(); broadcastState(room);
+}
+
+function dragDefenseLogo(room, player, payload) {
+  const defense = room.defense, targetId = String(payload.targetId || ""), x = Number(payload.x), y = Number(payload.y);
+  if (room.phase !== "corner-defense" || !defense || !defense.defenders.some((entry) => entry.playerId === player.id)) return;
+  const target = defense.defenders.find((entry) => entry.playerId === targetId);
+  if (!target || target.playerId === player.id || !Number.isFinite(x) || !Number.isFinite(y)) return;
+  target.ball.x = clamp(x - target.ball.width / 2, 0, WIDTH - target.ball.width);
+  target.ball.y = clamp(y - target.ball.height / 2, 0, HEIGHT - target.ball.height);
+  aimPredictionAtCorner(target.ball);
+}
+
+function updateDefenseCursor(room, player, payload) {
+  const defense = room.defense, x = Number(payload.x), y = Number(payload.y);
+  if (room.phase !== "corner-defense" || !defense || !Number.isFinite(x) || !Number.isFinite(y)) return;
+  const entry = defense.defenders.find((defender) => defender.playerId === player.id);
+  if (entry) entry.cursor = { x: clamp(x, 0, WIDTH), y: clamp(y, 0, HEIGHT) };
+}
+
+function stepCornerDefense(room, deltaSeconds) {
+  const defense = room.defense; if (!defense || defense.winnerId) return;
+  for (const entry of defense.defenders) {
+    let cornered = false;
+    stepMovingBall(entry.ball, deltaSeconds, (both) => { if (both) { cornered = true; return true; } return false; });
+    if (!cornered) continue;
+    entry.score += 1;
+    if (entry.score >= DEFENSE_WIN_SCORE) { finishCornerDefense(room, entry.playerId); return; }
+    entry.ball = createDefenseBall(defense.defenders.indexOf(entry));
+  }
+}
+
+function finishCornerDefense(room, winnerId) {
+  const defense = room.defense, winner = room.players.get(winnerId);
+  defense.winnerId = winnerId;
+  if (winner) { winner.discs = Math.min(MAX_DISCS, winner.discs + 25); winner.roundWon += 25; }
+  const winners = defense.bets.filter((bet) => bet.targetId === winnerId), totalStake = winners.reduce((sum, bet) => sum + bet.stake, 0);
+  for (const bet of winners) { const player = room.players.get(bet.playerId); if (!player) continue; const payout = totalStake ? Math.floor(defense.pot * bet.stake / totalStake) : 0; player.discs = Math.min(MAX_DISCS, player.discs + payout); player.roundWon += payout; bet.payout = payout; }
+  defense.winningBets = winners; room.phase = "results"; broadcastState(room);
+  defense.resultsTimer = setTimeout(() => resetToLobby(room), 9000);
 }
 
 function startPredictionBetting(room, continuing = false) {
@@ -984,6 +1105,7 @@ function startPong(room) {
     powerTimer: 6,
     effect: null,
     lastHitSeat: null,
+    scoreLimit: room.pongTarget === "infinite" ? null : 11,
   };
   broadcastState(room);
 }
@@ -1134,8 +1256,8 @@ function scorePong(room, seat, serveAtSeat = null) {
   const pong = room.pong;
   if (!seat) return;
   pong.score[seat] += 1;
-  if (pong.score[seat] >= 5) {
-    finishPong(room, seat, "First to five");
+  if (pong.scoreLimit && pong.score[seat] >= pong.scoreLimit) {
+    finishPong(room, seat, `First to ${pong.scoreLimit}`);
     return;
   }
   pong.effect = null;
@@ -1163,11 +1285,14 @@ function resetToLobby(room) {
   clearTimeout(room.derby?.bettingTimer);
   clearTimeout(room.derby?.resultsTimer);
   clearTimeout(room.derby?.countdownTimer);
+  clearTimeout(room.defense?.bettingTimer);
+  clearTimeout(room.defense?.resultsTimer);
   room.phase = "lobby";
   room.prediction = null;
   room.pong = null;
   clearTemporaryPongBots(room);
   if (room.mode === "derby") room.derby = createDerby(room.derbyStyle);
+  if (room.mode === "defense") room.defense = createCornerDefense();
   for (const player of room.players.values()) player.input = 0;
   broadcastState(room);
 }
@@ -1190,6 +1315,11 @@ function loop() {
       room.derby.lastTick = now;
       stepDerby(room, delta);
     }
+    if (room.phase === "corner-defense" && room.defense) {
+      const delta = Math.min((now - room.defense.lastTick) / 1000, 0.04);
+      room.defense.lastTick = now;
+      stepCornerDefense(room, delta);
+    }
     broadcastState(room);
   }
 }
@@ -1203,6 +1333,7 @@ function publicState(room) {
       mode: room.mode,
       predictionStyle: room.predictionStyle,
       derbyStyle: room.derbyStyle,
+      pongTarget: room.pongTarget,
       solo: room.solo,
       soloPongSize: room.soloPongSize,
       maxPlayers: room.maxPlayers,
@@ -1251,6 +1382,7 @@ function publicState(room) {
         ball: room.pong.ball,
         power: room.pong.power,
         effect: room.pong.effect,
+        scoreLimit: room.pong.scoreLimit,
         result: room.pong.result || null,
       },
       derby: room.derby && {
@@ -1263,6 +1395,14 @@ function publicState(room) {
         logos: room.derby.logos.map((logo) => ({ id: logo.id, ownerId: logo.ownerId, ball: logo.ball, bounces: logo.bounces, effects: logo.effects })),
         winningBets: room.phase === "results" ? (room.derby.winningBets || []) : [],
         cooldowns: room.derby.cooldowns,
+      },
+      defense: room.defense && {
+        closesAt: room.defense.closesAt,
+        pot: room.defense.pot,
+        betCount: room.defense.bets.length,
+        winnerId: room.defense.winnerId,
+        defenders: room.defense.defenders.map((entry) => ({ playerId: entry.playerId, score: entry.score, ball: entry.ball, cursor: entry.cursor })),
+        winningBets: room.phase === "results" ? (room.defense.winningBets || []) : [],
       },
     },
   };
