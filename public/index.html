@@ -141,17 +141,18 @@
     </section>
   </main>
   <div id="screen-controls" class="screen-controls"><button id="settings-button" class="hidden" title="Settings" aria-label="Settings">&#9881;</button><button id="fullscreen-button" title="Toggle fullscreen" aria-label="Toggle fullscreen">&#x26F6;</button></div>
-  <audio id="menu-music" loop preload="auto" aria-label="Disc Insertion menu music"><source src="assets/menu-theme.mp4" type="video/mp4"></audio>
+  <audio id="menu-music" loop preload="auto" aria-label="Disc Insertion title music"><source src="assets/menu-theme.mp4" type="video/mp4"></audio>
+  <audio id="anticipation-music" loop preload="auto" aria-label="Anticipation menu music"><source src="assets/anticipation.mp4" type="video/mp4"></audio>
   <section id="modal" class="modal hidden"><div class="panel"><p class="eyebrow" id="modal-eyebrow">Power shop</p><h2 id="modal-title">Spend discs</h2><div id="modal-body"></div><p id="modal-notice" class="notice" style="margin-top:10px"></p><button id="modal-close" style="width:100%;margin-top:12px">Close</button></div></section>
   <script>
     const canvas = document.getElementById("arena");
     const ctx = canvas.getContext("2d");
     const menuMusic = document.getElementById("menu-music");
+    const anticipationMusic = document.getElementById("anticipation-music");
     const savedSettings=(()=>{try{return JSON.parse(localStorage.getItem("dvd-corner-clash-settings")||"{}");}catch{return {};}})();
     const settings={music:savedSettings.music!==false,sfx:savedSettings.sfx!==false,motion:["all","logos","still"].includes(savedSettings.motion)?savedSettings.motion:savedSettings.motion===false?"still":"all"};
     const app = { socket:null, room:null, playerId:null, roomCode:null, rooms:[], lastError:"", input:0, modal:null, modalSignature:"", miniNumber:null, defenseDrag:null, lastDefenseCursor:0, modeSelection:null, modeCursor:0, dodge:{up:false,down:false,left:false,right:false} };
-    menuMusic.loop=true;
-    menuMusic.addEventListener("ended",()=>{menuMusic.currentTime=0;syncMusic();});
+    [menuMusic,anticipationMusic].forEach((track)=>{track.loop=true;track.addEventListener("ended",()=>{track.currentTime=0;syncMusic();});});
     const powerInfo = { mini:["Mini Logo Bet",15,"Freeze the route and let everyone call one exact number from 1 to 10."], scramble:["Angle Scramble",55,"Host-only reset; changes the route without resetting the counter."], turbo:["Turbo",28,"Speed up the shared logo for 15 seconds."], slow:["Slow Field",22,"Slow the shared logo for 15 seconds."], grow:["Grow",24,"Make the shared logo larger for 15 seconds."], shrink:["Shrink",20,"Make the shared logo smaller for 15 seconds."], fire:["Fire Dodge",36,"Spawn cubes, count down, then dodge the fire logo for 60 seconds."] };
     const derbyPowerInfo = { turbo:["Turbo",22,"Speed up the selected racer."], slow:["Slow Field",18,"Slow the selected racer."], grow:["Grow",20,"Make the selected racer bigger."], shrink:["Shrink",18,"Make the selected racer smaller."], chaos:["Chaos Pulse",48,"Give every racer a random temporary effect."] };
     const $ = (id) => document.getElementById(id);
@@ -178,7 +179,8 @@
 
     function updateScreenControls(){const showSettings=["title-screen","mode-screen","landing","game-mode-screen"].some((id)=>!$(id).classList.contains("hidden"));$("settings-button").classList.toggle("hidden",!showSettings);}
     function showScreen(id) { ["title-screen","mode-screen","landing","game-mode-screen","game"].forEach((screen)=>$(screen).classList.toggle("hidden",screen!==id)); if(id==="mode-screen")resetModeScene(); if(id==="game-mode-screen")resetGameModeScene(); updateScreenControls(); syncMusic(); }
-    function syncMusic() { const menuVisible=["title-screen","mode-screen","landing","game-mode-screen"].some((id)=>!$(id).classList.contains("hidden")); const preRound=app.room && ["lobby","betting","derby-betting"].includes(app.room.phase); if(settings.music&&(menuVisible||preRound)) menuMusic.play().catch(()=>{}); else { menuMusic.pause(); menuMusic.currentTime=0; } }
+    function resetTrack(track){track.pause();track.currentTime=0;}
+    function syncMusic() { const titleVisible=!$("title-screen").classList.contains("hidden"), anticipationVisible=["mode-screen","landing","game-mode-screen"].some((id)=>!$(id).classList.contains("hidden"))||(app.room&&["lobby","betting","derby-betting"].includes(app.room.phase)); if(!settings.music){resetTrack(menuMusic);resetTrack(anticipationMusic);return;} if(titleVisible){anticipationMusic.pause();anticipationMusic.currentTime=0;menuMusic.play().catch(()=>{});return;} if(anticipationVisible){menuMusic.pause();menuMusic.currentTime=0;anticipationMusic.play().catch(()=>{});return;} resetTrack(menuMusic);resetTrack(anticipationMusic); }
     $("boot-screen").addEventListener("click", () => {
       const boot = $("boot-screen");
       if (boot.dataset.started) return;
@@ -295,7 +297,7 @@
       if (app.modal === "settings") {
         const signature=JSON.stringify({modal:app.modal,settings}); if(signature===app.modalSignature)return; app.modalSignature=signature; modal.classList.remove("hidden");
         $("modal-eyebrow").textContent="Settings"; $("modal-title").textContent="Make it yours.";
-        $("modal-body").innerHTML=`<p class="info">These options are saved on this device.</p><div class="settings-options"><button data-setting="music" class="${settings.music?"active":""}"><b>Menu music: ${settings.music?"On":"Off"}</b><small>Disc Insertion plays on title and pre-round screens.</small></button><button data-setting="sfx" class="${settings.sfx?"active":""}"><b>Sound effects: ${settings.sfx?"On":"Off"}</b><small>Controls UI and future game sound effects.</small></button><button data-motion="all" class="${settings.motion==="all"?"active":""}"><b>Full menu motion</b><small>Cards, prompts, and DVD logos all move.</small></button><button data-motion="logos" class="${settings.motion==="logos"?"active":""}"><b>DVD logos only</b><small>Keep interface cards still while only DVD logos move.</small></button><button data-motion="still" class="${settings.motion==="still"?"active":""}"><b>Everything still</b><small>Freeze all menu cards, prompts, and DVD logos.</small></button></div>`;
+        $("modal-body").innerHTML=`<p class="info">These options are saved on this device.</p><div class="settings-options"><button data-setting="music" class="${settings.music?"active":""}"><b>Menu music: ${settings.music?"On":"Off"}</b><small>Disc Insertion plays on title. Anticipation plays on the other menus.</small></button><button data-setting="sfx" class="${settings.sfx?"active":""}"><b>Sound effects: ${settings.sfx?"On":"Off"}</b><small>Controls UI and future game sound effects.</small></button><button data-motion="all" class="${settings.motion==="all"?"active":""}"><b>Full menu motion</b><small>Cards, prompts, and DVD logos all move.</small></button><button data-motion="logos" class="${settings.motion==="logos"?"active":""}"><b>DVD logos only</b><small>Keep interface cards still while only DVD logos move.</small></button><button data-motion="still" class="${settings.motion==="still"?"active":""}"><b>Everything still</b><small>Freeze all menu cards, prompts, and DVD logos.</small></button></div>`;
         $("modal-close").textContent="Close settings"; $("modal-close").disabled=false; return;
       }
       const signature = JSON.stringify({ modal:app.modal, cooldowns:prediction?.cooldowns, mini:prediction?.mini?.bets, phase:room.phase, fire:room.fireDodgeEnabled });
