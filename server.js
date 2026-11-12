@@ -15,8 +15,10 @@ const HEIGHT = 620;
 const TICK_MS = 1000 / 60;
 const MAX_DISCS = 9999;
 const PONG_SEATS = ["top", "bottom", "left", "right"];
-const DEFENSE_MAX_PLAYERS = 6;
+const DEFENSE_MAX_PLAYERS = 8;
 const DEFENSE_WIN_SCORE = 5;
+const DEFENSE_HOLD_MS = 3000;
+const DEFENSE_IMMUNITY_MS = 6000;
 const PREDICTION_POWERS = {
   mini: { price: 15, cooldown: 15 },
   scramble: { price: 55, cooldown: 150 },
@@ -291,7 +293,9 @@ function handleMessage(client, message) {
   if (message.type === "claim-defense") { claimDefenseSpot(room, player); return; }
   if (message.type === "place-defense-bet") { placeDefenseBet(room, player, message); return; }
   if (message.type === "defense-drag") { dragDefenseLogo(room, player, message); return; }
+  if (message.type === "defense-drag-end") { endDefenseDrag(room, player, message); return; }
   if (message.type === "defense-cursor") { updateDefenseCursor(room, player, message); return; }
+  if (message.type === "defense-pickup") { pickDefensePower(room, player, message); return; }
 
   if (message.type === "paddle") {
     if (room.phase === "pong" && player.seat && Number.isFinite(message.direction)) {
@@ -583,19 +587,21 @@ function finishDerby(room, winnerId) {
 }
 
 function createDefenseBall(index = 0) {
-  const ball = { x: randomInt(90, WIDTH - 190), y: randomInt(90, HEIGHT - 130), width: 118, height: 65, vx: 95, vy: 0, hue: (index * 57 + randomInt(0, 30)) % 360 };
+  const ball = { x: randomInt(90, WIDTH - 190), y: randomInt(90, HEIGHT - 130), width: 118, height: 65, baseWidth: 118, baseHeight: 65, baseSpeed: 95, vx: 95, vy: 0, hue: (index * 57 + randomInt(0, 30)) % 360 };
   aimPredictionAtCorner(ball);
   return ball;
 }
 
-function createCornerDefense() { return { defenders: [], bets: [], pot: 0, closesAt: null, lastTick: null, winnerId: null }; }
+function createDefenseEntry(playerId, index) { return { playerId, score: 0, ball: createDefenseBall(index), cursor: null, effects: [], heldBy: null, holdEndsAt: 0, cooldownUntil: 0 }; }
+
+function createCornerDefense() { return { defenders: [], bets: [], pot: 0, closesAt: null, lastTick: null, winnerId: null, power: null, powerTimer: 5 }; }
 
 function claimDefenseSpot(room, player) {
   const defense = room.defense;
   if (room.mode !== "defense" || room.phase !== "lobby" || !defense) return;
   if (defense.defenders.some((entry) => entry.playerId === player.id)) { sendToPlayer(room, player.id, { type: "error", message: "You already control a DVD in Corner Defense." }); return; }
-  if (defense.defenders.length >= DEFENSE_MAX_PLAYERS) { sendToPlayer(room, player.id, { type: "error", message: "All six Corner Defense slots are taken. You can still spectate and bet." }); return; }
-  defense.defenders.push({ playerId: player.id, score: 0, ball: createDefenseBall(defense.defenders.length), cursor: null });
+  if (defense.defenders.length >= DEFENSE_MAX_PLAYERS) { sendToPlayer(room, player.id, { type: "error", message: "All eight Corner Defense slots are taken. You can still spectate and bet." }); return; }
+  defense.defenders.push(createDefenseEntry(player.id, defense.defenders.length));
   broadcastState(room);
 }
 
@@ -603,7 +609,7 @@ function prepareSoloDefense(room) {
   const defense = room.defense;
   if (!room.solo || !defense) return;
   const available = [...room.players.values()].filter((player) => player.connected).slice(0, DEFENSE_MAX_PLAYERS);
-  for (const player of available) if (!defense.defenders.some((entry) => entry.playerId === player.id)) defense.defenders.push({ playerId: player.id, score: 0, ball: createDefenseBall(defense.defenders.length), cursor: null });
+  for (const player of available) if (!defense.defenders.some((entry) => entry.playerId === player.id)) defense.defenders.push(createDefenseEntry(player.id, defense.defenders.length));
 }
 
 function startDefenseBetting(room) {
@@ -612,8 +618,8 @@ function startDefenseBetting(room) {
   const defense = room.defense;
   if (defense.defenders.length < 2) { sendToPlayer(room, room.hostId, { type: "error", message: "Corner Defense needs at least two claimed DVD logos." }); return; }
   for (const player of room.players.values()) player.roundWon = 0;
-  defense.bets = []; defense.pot = 0; defense.winnerId = null; defense.closesAt = Date.now() + 20000;
-  defense.defenders.forEach((entry, index) => { entry.score = 0; entry.ball = createDefenseBall(index); entry.cursor = null; });
+  defense.bets = []; defense.pot = 0; defense.winnerId = null; defense.closesAt = Date.now() + 20000; defense.power = null; defense.powerTimer = 5;
+  defense.defenders.forEach((entry, index) => { entry.score = 0; entry.ball = createDefenseBall(index); entry.cursor = null; entry.effects = []; entry.heldBy = null; entry.holdEndsAt = 0; entry.cooldownUntil = 0; });
   room.phase = "defense-betting";
   defense.bettingTimer = setTimeout(() => beginCornerDefense(room), 20000);
   broadcastState(room);
@@ -650,10 +656,51 @@ function dragDefenseLogo(room, player, payload) {
   const defense = room.defense, targetId = String(payload.targetId || ""), x = Number(payload.x), y = Number(payload.y);
   if (room.phase !== "corner-defense" || !defense || !defense.defenders.some((entry) => entry.playerId === player.id)) return;
   const target = defense.defenders.find((entry) => entry.playerId === targetId);
-  if (!target || target.playerId === player.id || !Number.isFinite(x) || !Number.isFinite(y)) return;
+  const holder = defense.defenders.find((entry) => entry.playerId === player.id), now = Date.now();
+  if (!target || !holder || target.playerId === player.id || !Number.isFinite(x) || !Number.isFinite(y) || target.cooldownUntil > now || hasDefenseEffect(target, "shield")) return;
+  if (target.heldBy && target.heldBy !== player.id) return;
+  if (target.holdEndsAt && target.holdEndsAt <= now) { releaseDefenseHold(defense, target, now); return; }
+  if (!target.heldBy) {
+    const previous = defense.defenders.find((entry) => entry.playerId === holder.holdingTargetId);
+    if (previous) releaseDefenseHold(defense, previous, now);
+    target.heldBy = player.id; target.holdEndsAt = now + DEFENSE_HOLD_MS; holder.holdingTargetId = target.playerId;
+  }
   target.ball.x = clamp(x - target.ball.width / 2, 0, WIDTH - target.ball.width);
   target.ball.y = clamp(y - target.ball.height / 2, 0, HEIGHT - target.ball.height);
   aimPredictionAtCorner(target.ball);
+}
+
+function endDefenseDrag(room, player, payload) {
+  const defense = room.defense, target = defense?.defenders.find((entry) => entry.playerId === String(payload.targetId || ""));
+  if (room.phase === "corner-defense" && target?.heldBy === player.id) releaseDefenseHold(defense, target, Date.now());
+}
+
+function releaseDefenseHold(defense, target, now) {
+  const holder = defense.defenders.find((entry) => entry.playerId === target.heldBy);
+  if (holder) holder.holdingTargetId = null;
+  target.heldBy = null; target.holdEndsAt = 0; target.cooldownUntil = now + DEFENSE_IMMUNITY_MS;
+}
+
+function hasDefenseEffect(entry, type) { return entry.effects?.some((effect) => effect.type === type && effect.expiresAt > Date.now()); }
+
+function applyDefenseEffects(entry) {
+  entry.effects = (entry.effects || []).filter((effect) => effect.expiresAt > Date.now());
+  const ball = entry.ball, speedFactor = entry.effects.reduce((factor, effect) => factor * (effect.type === "turbo" ? 1.55 : effect.type === "slow" ? 0.62 : 1), 1), sizeFactor = entry.effects.reduce((factor, effect) => factor * (effect.type === "grow" ? 1.32 : effect.type === "shrink" ? 0.72 : 1), 1);
+  const centerX = ball.x + ball.width / 2, centerY = ball.y + ball.height / 2, speed = ball.baseSpeed * speedFactor, currentSpeed = Math.hypot(ball.vx, ball.vy) || 1;
+  ball.vx = ball.vx / currentSpeed * speed; ball.vy = ball.vy / currentSpeed * speed;
+  ball.width = ball.baseWidth * sizeFactor; ball.height = ball.baseHeight * sizeFactor;
+  ball.x = clamp(centerX - ball.width / 2, 0, WIDTH - ball.width); ball.y = clamp(centerY - ball.height / 2, 0, HEIGHT - ball.height);
+}
+
+function pickDefensePower(room, player, payload) {
+  const defense = room.defense, powerId = String(payload.powerId || ""), owner = defense?.defenders.find((entry) => entry.playerId === player.id);
+  if (room.phase !== "corner-defense" || !defense?.power || defense.power.id !== powerId || !owner) return;
+  const dx = Number(payload.x) - defense.power.x, dy = Number(payload.y) - defense.power.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) > 48) return;
+  const type = defense.power.type, now = Date.now(); defense.power = null; defense.powerTimer = 5;
+  if (["turbo", "grow", "shrink", "shield"].includes(type)) owner.effects.push({ type, expiresAt: now + (type === "shield" ? 3000 : 4500) });
+  if (type === "slow") for (const entry of defense.defenders) if (entry.playerId !== owner.playerId) entry.effects.push({ type, expiresAt: now + 3500 });
+  if (type === "scramble") for (const entry of defense.defenders) if (entry.playerId !== owner.playerId) aimPredictionAtCorner(entry.ball);
 }
 
 function updateDefenseCursor(room, player, payload) {
@@ -666,13 +713,22 @@ function updateDefenseCursor(room, player, payload) {
 function stepCornerDefense(room, deltaSeconds) {
   const defense = room.defense; if (!defense || defense.winnerId) return;
   stepDefenseBots(room, defense);
+  defense.powerTimer -= deltaSeconds;
+  if (!defense.power && defense.powerTimer <= 0) {
+    const types = ["turbo", "slow", "grow", "shrink", "scramble", "shield"];
+    defense.power = { id: crypto.randomUUID(), type: types[randomInt(0, types.length - 1)], x: randomInt(90, WIDTH - 90), y: randomInt(90, HEIGHT - 90) };
+    defense.powerTimer = 8;
+  }
   for (const entry of defense.defenders) {
+    if (entry.heldBy && entry.holdEndsAt <= Date.now()) releaseDefenseHold(defense, entry, Date.now());
+    applyDefenseEffects(entry);
     let cornered = false;
     stepMovingBall(entry.ball, deltaSeconds, (both) => { if (both) { cornered = true; return true; } return false; });
     if (!cornered) continue;
     entry.score += 1;
     if (entry.score >= DEFENSE_WIN_SCORE) { finishCornerDefense(room, entry.playerId); return; }
     entry.ball = createDefenseBall(defense.defenders.indexOf(entry));
+    entry.effects = []; entry.heldBy = null; entry.holdEndsAt = 0; entry.cooldownUntil = 0;
   }
 }
 
@@ -689,7 +745,8 @@ function stepDefenseBots(room, defense) {
     }
     if (!target) continue;
     entry.cursor = { x: target.ball.x + target.ball.width / 2, y: target.ball.y + target.ball.height / 2 };
-    if ((entry.nextBotDragAt || 0) > now) continue;
+    if ((entry.nextBotDragAt || 0) > now || target.heldBy || target.cooldownUntil > now || hasDefenseEffect(target, "shield")) continue;
+    target.heldBy = entry.playerId; target.holdEndsAt = now + DEFENSE_HOLD_MS; entry.holdingTargetId = target.playerId;
     target.ball.x = randomInt(150, WIDTH - target.ball.width - 150);
     target.ball.y = randomInt(120, HEIGHT - target.ball.height - 120);
     aimPredictionAtCorner(target.ball);
@@ -1424,7 +1481,8 @@ function publicState(room) {
         pot: room.defense.pot,
         betCount: room.defense.bets.length,
         winnerId: room.defense.winnerId,
-        defenders: room.defense.defenders.map((entry) => ({ playerId: entry.playerId, score: entry.score, ball: entry.ball, cursor: entry.cursor })),
+        power: room.defense.power,
+        defenders: room.defense.defenders.map((entry) => ({ playerId: entry.playerId, score: entry.score, ball: entry.ball, cursor: entry.cursor, effects: entry.effects.filter((effect) => effect.expiresAt > Date.now()), heldBy: entry.heldBy, holdEndsAt: entry.holdEndsAt, cooldownUntil: entry.cooldownUntil })),
         winningBets: room.phase === "results" ? (room.defense.winningBets || []) : [],
       },
     },
