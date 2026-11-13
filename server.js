@@ -47,7 +47,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const type = filePath.endsWith(".html") ? "text/html; charset=utf-8" : filePath.endsWith(".mp4") ? "video/mp4" : "text/plain; charset=utf-8";
+  const type = filePath.endsWith(".html") ? "text/html; charset=utf-8" : filePath.endsWith(".mp4") ? "video/mp4" : filePath.endsWith(".mp3") ? "audio/mpeg" : "text/plain; charset=utf-8";
   res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" });
   fs.createReadStream(filePath).pipe(res);
 });
