@@ -193,6 +193,7 @@ function makePlayer(name) {
     connected: true,
     seat: null,
     input: 0,
+    lobby: { x: 130 + Math.random() * 740, y: 175 + Math.random() * 280 },
     dodge: { up: false, down: false, left: false, right: false },
   };
 }
@@ -300,6 +301,14 @@ function handleMessage(client, message) {
   if (message.type === "paddle") {
     if (room.phase === "pong" && player.seat && Number.isFinite(message.direction)) {
       player.input = Math.max(-1, Math.min(1, Number(message.direction)));
+    }
+    return;
+  }
+
+  if (message.type === "lobby-move") {
+    if (["lobby", "betting", "derby-betting", "defense-betting"].includes(room.phase) && Number.isFinite(message.x) && Number.isFinite(message.y)) {
+      player.lobby = { x: Math.max(105, Math.min(895, Number(message.x))), y: Math.max(155, Math.min(510, Number(message.y))) };
+      broadcastState(room);
     }
     return;
   }
@@ -1426,6 +1435,7 @@ function publicState(room) {
         discs: player.discs,
         roundWon: player.roundWon,
         seat: player.seat,
+        lobby: player.lobby,
       })),
       prediction: room.prediction && {
         mode: room.prediction.mode,
